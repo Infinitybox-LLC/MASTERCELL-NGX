@@ -1,0 +1,15 @@
+# Build artifacts
+build/
+dist/
+debug/
+
+# Log files
+*.log
+*.log.inx
+
+# Queue logs
+queuelogs/
+
+# IDE private files
+nbproject/private/
+

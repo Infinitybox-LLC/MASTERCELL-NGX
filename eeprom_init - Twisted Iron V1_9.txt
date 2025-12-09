@@ -1,0 +1,1452 @@
+/*
+ * FILE: eeprom_init.c
+ * EEPROM Initialization - Custom Configuration for Twisted Iron V2.9
+ * 
+ * TEST PATTERN:
+ * - All ON cases are INVALID (0xFF) so they don't broadcast
+ * - OFF cases broadcast their input number in ALL 8 data bytes
+ * - Each input's OFF cases use UNIQUE CAN IDs to avoid aggregation
+ * - IN01: 18FF011E, 18FF021E (data: 0x01)
+ * - IN02: 18FF031E, 18FF041E (data: 0x02)
+ * - IN25: 18FF051E, 18FF061E (data: 0x19)
+ * - IN26: 18FF071E, 18FF081E (data: 0x1A)
+ * - etc.
+ * 
+ * FIXED:
+ * - Uses EEPROM_Init_WriteByte (original function name)
+ * - Each input has unique CAN IDs for OFF cases
+ * - No aggregation/OR issues
+ */
+
+#include "eeprom_init.h"
+#include "eeprom_cases.h"
+#include "eeprom_config.h"
+#include <string.h>
+#include <stdio.h>  // For sprintf (if needed)
+
+#define FCY 16000000UL
+#include <libpic30.h>
+
+// Write verification counter
+static uint16_t write_errors = 0;
+static uint16_t words_written = 0;
+static uint8_t last_error_type = 0;  // 0=none, 1=timeout, 2=verify, 3=bounds
+static uint16_t write_attempts = 0;
+
+/*
+ * Write a word to EEPROM
+ * Returns: 1=success, 0=failure
+ */
+static uint8_t EEPROM_WriteWord(uint16_t address, uint16_t data) {
+    write_attempts++;
+    
+    // Address must be even and in valid range
+    if(address & 0x01) {
+        write_errors++;
+        last_error_type = 3;  // Bounds error
+        return 0;
+    }
+    if(address >= 0x1000) {
+        write_errors++;
+        last_error_type = 3;  // Bounds error
+        return 0;
+    }
+    
+    // ==========================================
+    // STEP 1: ERASE the word
+    // ==========================================
+    TBLPAG = 0x7F;
+    __builtin_tblwtl(0xF000 + address, 0xFFFF);
+    
+    NVMCON = 0x4044;  // Word erase operation
+    
+    asm volatile ("disi #5");
+    asm volatile ("mov #0x55, W0");
+    asm volatile ("mov W0, NVMKEY");
+    asm volatile ("mov #0xAA, W0");
+    asm volatile ("mov W0, NVMKEY");
+    asm volatile ("bset NVMCON, #15");
+    asm volatile ("nop");
+    asm volatile ("nop");
+    
+    uint16_t timeout = 30000;
+    while((NVMCON & 0x8000) && timeout > 0) {
+        timeout--;
+    }
+    
+    if(timeout == 0) {
+        write_errors++;
+        last_error_type = 1;  // Timeout
+        return 0;
+    }
+    
+    __delay_ms(3);
+    
+    // ==========================================
+    // STEP 2: WRITE the data
+    // ==========================================
+    TBLPAG = 0x7F;
+    __builtin_tblwtl(0xF000 + address, data);
+    
+    NVMCON = 0x4004;  // Word write operation
+    
+    asm volatile ("disi #5");
+    asm volatile ("mov #0x55, W0");
+    asm volatile ("mov W0, NVMKEY");
+    asm volatile ("mov #0xAA, W0");
+    asm volatile ("mov W0, NVMKEY");
+    asm volatile ("bset NVMCON, #15");
+    asm volatile ("nop");
+    asm volatile ("nop");
+    
+    timeout = 30000;
+    while((NVMCON & 0x8000) && timeout > 0) {
+        timeout--;
+    }
+    
+    if(timeout == 0) {
+        write_errors++;
+        last_error_type = 1;  // Timeout
+        return 0;
+    }
+    
+    __delay_ms(3);
+    
+    // Verify
+    TBLPAG = 0x7F;
+    uint16_t verify = __builtin_tblrdl(0xF000 + address);
+    
+    if(verify != data) {
+        write_errors++;
+        last_error_type = 2;  // Verify fail
+        return 0;
+    }
+    
+    words_written++;
+    last_error_type = 0;  // Success
+    return 1;
+}
+
+static void EEPROM_WriteBytePair(uint16_t address, uint8_t byte0, uint8_t byte1) {
+    if(address & 0x01) {
+        write_errors++;
+        last_error_type = 3;
+        return;
+    }
+    if(address >= 0x1000) {
+        write_errors++;
+        last_error_type = 3;
+        return;
+    }
+    
+    uint16_t word = byte0 | ((uint16_t)byte1 << 8);
+    EEPROM_WriteWord(address, word);
+}
+
+/*
+ * Write a complete 32-byte case to EEPROM
+ */
+static void EEPROM_WriteCase(uint16_t address, uint8_t priority, uint16_t pgn, 
+                             uint8_t source_addr, uint8_t config_byte, uint8_t pattern_timing,
+                             uint8_t requires_ignition, uint8_t *data) {
+    // Validate address
+    if(address & 0x01) {
+        write_errors++;
+        last_error_type = 3;
+        return;
+    }
+    if(address >= 0x1000) {
+        write_errors++;
+        last_error_type = 3;
+        return;
+    }
+    
+    uint8_t case_buffer[32];
+    memset(case_buffer, 0x00, 32);
+    
+    // Bytes 0-3: Priority, PGN high, PGN low, Source Address
+    case_buffer[0] = priority & 0x07;
+    case_buffer[1] = (pgn >> 8) & 0xFF;
+    case_buffer[2] = pgn & 0xFF;
+    case_buffer[3] = source_addr;
+    
+    // Byte 4: Configuration flags
+    case_buffer[4] = config_byte;
+    
+    // Bytes 5-6: Reserved (0x00)
+    case_buffer[5] = 0x00;
+    case_buffer[6] = 0x00;
+    
+    // Byte 7: Pattern timing
+    case_buffer[7] = pattern_timing;
+    
+    // Bytes 8-15: Must Be On (conditional logic)
+    // Byte 13 bit 5 (0x20) = Requires Ignition
+    if(requires_ignition) {
+        case_buffer[13] = 0x20;
+    }
+    
+    // Bytes 16-23: Must Be Off (all zeros for now)
+    
+    // Bytes 24-31: CAN Data payload
+    for(uint8_t i = 0; i < 8; i++) {
+        case_buffer[24 + i] = data[i];
+    }
+    
+    // Write case word by word
+    for(uint8_t i = 0; i < 32; i += 2) {
+        if(address + i >= 0x1000) {
+            write_errors++;
+            last_error_type = 3;
+            return;
+        }
+        uint16_t word = case_buffer[i] | ((uint16_t)case_buffer[i+1] << 8);
+        EEPROM_WriteWord(address + i, word);
+    }
+}
+
+static void EEPROM_WriteInvalidCase(uint16_t address) {
+    // Validate address
+    if(address & 0x01) {
+        write_errors++;
+        last_error_type = 3;
+        return;
+    }
+    if(address >= 0x1000) {
+        write_errors++;
+        last_error_type = 3;
+        return;
+    }
+    
+    // Write all 0xFF to mark as invalid
+    for(uint8_t i = 0; i < 32; i += 2) {
+        if(address + i >= 0x1000) {
+            write_errors++;
+            last_error_type = 3;
+            return;
+        }
+        EEPROM_WriteWord(address + i, 0xFFFF);
+    }
+}
+
+// Read back a word to verify
+static uint16_t EEPROM_ReadWord(uint16_t address) {
+    if(address >= 0x1000) return 0xFFFF;
+    if(address & 0x01) return 0xFFFF;
+    
+    TBLPAG = 0x7F;
+    return __builtin_tblrdl(0xF000 + address);
+}
+
+uint8_t EEPROM_IsInitialized(void) {
+    // Check for init stamp (0xA5) at byte address 7
+    // Byte 7 is in word address 0x0006, MSB position
+    TBLPAG = 0x7F;
+    uint16_t word = __builtin_tblrdl(0xF000 + 0x0006);
+    uint8_t init_stamp = (uint8_t)((word >> 8) & 0xFF);
+    
+    return (init_stamp == DEFAULT_INIT_STAMP);
+}
+
+/*
+ * Parse CAN ID string to extract priority, PGN, and source address
+ * Format: "18FF011E" = Priority 6, PGN 0xFF01, SA 0x1E
+ */
+static void ParseCANID(const char *can_id_str, uint8_t *priority, uint16_t *pgn, uint8_t *sa) {
+    // Convert hex string to 32-bit value
+    uint32_t can_id = 0;
+    for(uint8_t i = 0; i < 8; i++) {
+        can_id = (can_id << 4);
+        char c = can_id_str[i];
+        if(c >= '0' && c <= '9') can_id |= (c - '0');
+        else if(c >= 'A' && c <= 'F') can_id |= (c - 'A' + 10);
+        else if(c >= 'a' && c <= 'f') can_id |= (c - 'a' + 10);
+    }
+    
+    // Extract fields from 29-bit CAN ID
+    // Bits 28-26: Priority
+    // Bits 25-8: PGN (18 bits, but we use bits 16-8 as PGN for J1939)
+    // Bits 7-0: Source Address
+    *priority = (can_id >> 26) & 0x07;
+    *pgn = (can_id >> 8) & 0xFFFF;  // Extract full 16-bit PGN portion
+    *sa = can_id & 0xFF;
+}
+
+/*
+ * TEST VERSION - EEPROM Initialization for OFF case testing
+ * 
+ * All ON cases are invalid (0xFF)
+ * OFF cases broadcast their input number with UNIQUE CAN IDs
+ */
+void EEPROM_InitMockData(void) {
+    uint16_t addr;
+    uint8_t data[8];
+    uint8_t priority, source_addr;
+    uint16_t pgn;
+    uint8_t config_byte, pattern_timing;
+    uint8_t requires_ignition;
+    char can_id_str[9];
+    
+    write_errors = 0;
+    words_written = 0;
+    last_error_type = 0;
+    write_attempts = 0;
+    
+    // ========================================
+    // Configuration Bytes (0-22) - UNCHANGED
+    // ========================================
+    
+    // Byte 0-1: Bitrate (0x01) + Heartbeat PGN A (0xFF)
+    EEPROM_WriteBytePair(0x0000, DEFAULT_BITRATE, DEFAULT_HB_PGN_A);
+    
+    // Byte 2-3: Heartbeat PGN B (0x00) + Heartbeat SA (0x80)
+    EEPROM_WriteBytePair(0x0002, DEFAULT_HB_PGN_B, DEFAULT_HB_SA);
+    
+    // Byte 4-5: Firmware Major (0x01) + Firmware Minor (0x06)
+    EEPROM_WriteBytePair(0x0004, DEFAULT_FW_MAJOR, 0x09);
+    
+    // Byte 6-7: Rebroadcast Mode (0x01) + Init Stamp (0xA5)
+    EEPROM_WriteBytePair(0x0006, DEFAULT_REBROADCAST_MODE, DEFAULT_INIT_STAMP);
+    
+    // Byte 8-9: Reserved (0xFF) + Reserved (0xFF)
+    EEPROM_WriteBytePair(0x0008, 0xFF, 0xFF);
+    
+    // Byte 10-11: Write Request PGN A (0xFF) + Write Request PGN B (0x10)
+    EEPROM_WriteBytePair(0x000A, DEFAULT_WRITE_REQ_PGN_A, DEFAULT_WRITE_REQ_PGN_B);
+    
+    // Byte 12-13: Write Request SA (0x80) + Read Request PGN A (0xFF)
+    EEPROM_WriteBytePair(0x000C, DEFAULT_WRITE_REQ_SA, DEFAULT_READ_REQ_PGN_A);
+    
+    // Byte 14-15: Read Request PGN B (0x20) + Read Request SA (0x80)
+    EEPROM_WriteBytePair(0x000E, DEFAULT_READ_REQ_PGN_B, DEFAULT_READ_REQ_SA);
+    
+    // Byte 16-17: Response PGN A (0xFF) + Response PGN B (0x30)
+    EEPROM_WriteBytePair(0x0010, DEFAULT_RESPONSE_PGN_A, DEFAULT_RESPONSE_PGN_B);
+    
+    // Byte 18-19: Response SA (0x80) + Diagnostic PGN A (0xFF)
+    EEPROM_WriteBytePair(0x0012, DEFAULT_RESPONSE_SA, DEFAULT_DIAGNOSTIC_PGN_A);
+    
+    // Byte 20-21: Diagnostic PGN B (0x40) + Diagnostic SA (0x80)
+    EEPROM_WriteBytePair(0x0014, DEFAULT_DIAGNOSTIC_PGN_B, DEFAULT_DIAGNOSTIC_SA);
+    
+    // Byte 22-23: Serial Number (0x42) + Customer Name 1 (0x54 = 'T')
+    EEPROM_WriteBytePair(0x0016, DEFAULT_SERIAL_NUMBER, 0x54);
+    
+    // Byte 24-25: Customer Name 2 ('W') + Customer Name 3 ('I')
+    EEPROM_WriteBytePair(0x0018, 0x57, 0x49);
+    
+    // Byte 26-27: Customer Name 4 ('R') + Reserved (0xFF)
+    EEPROM_WriteBytePair(0x001A, 0x52, 0xFF);
+    
+    // Byte 28-33: Reserved bytes (fill with 0xFF)
+    for(uint8_t i = 0x001C; i < 0x0022; i += 2) {
+        EEPROM_WriteBytePair(i, 0xFF, 0xFF);
+    }
+    
+    // ========================================
+    // ON Cases: ALL INVALID (0xFF)
+    // ========================================
+
+    // Starting address for ON cases
+    addr = 0x0022;
+
+    // IN01 - 4 ON cases - One Button Start
+    ParseCANID("18FF011E", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x20;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x11, 0x00, 0, data);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+	
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+
+    // IN02 - 2 ON cases - ALL INVALID
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN03 - 4 ON cases - Left Turn Signal
+    ParseCANID("18FF011E", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x80;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x33, 1, data);
+    addr += 32;
+    
+    ParseCANID("18FF021E", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x80;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x33, 1, data);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN04 - 4 ON cases - Right Turn Signal
+    ParseCANID("18FF011E", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x40;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x33, 1, data);
+    addr += 32;
+    
+    ParseCANID("18FF021E", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x40;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x33, 1, data);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN05 - 2 ON cases - Headlights
+    ParseCANID("18FF011E", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x08;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN06 - 6 ON cases - Parking Lights
+    ParseCANID("18FF011E", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x04;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+    
+    ParseCANID("18FF021E", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x04;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN07 - 1 ON case - High Beams
+    ParseCANID("18FF011E", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x02;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+
+    // IN08 - 6 ON cases - 4-Ways
+    ParseCANID("18FF011E", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0xC0;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x33, 0, data);
+    addr += 32;
+    
+    ParseCANID("18FF021E", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0xC0;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x33, 0, data);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN09 - 1 ON case - Horn
+    ParseCANID("18FF011E", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x00;
+    data[1] = 0x80;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+
+    // IN10 - 2 ON cases - Cooling Fan
+    ParseCANID("18FF011E", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x00;
+    data[1] = 0x00;
+    data[2] = 0x40;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x40, 0x00, 0, data);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN11 - 2 ON cases - 1-Filament Brake Lights
+    ParseCANID("18FF021E", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0xC0;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN12 - 2 ON cases - Rear Ignition
+    ParseCANID("18FF021E", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x20;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x40, 0x00, 0, data);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN13 - 2 ON cases - Fuel Pump
+    ParseCANID("18FF021E", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x00;
+    data[1] = 0x40;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN14 - 2 ON cases - ALL INVALID
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN15 - 6 ON cases - ALL INVALID
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN16 - 2 ON cases - ALL INVALID
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN17 - 2 ON cases - Backup Lights
+    ParseCANID("18FF021E", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x08;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 1, data);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN18 - 6 ON cases - Interior Lights
+    ParseCANID("18FF021E", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x10;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN19 - 2 ON cases - Water Pump
+    ParseCANID("18FF011E", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x00;
+    data[1] = 0x40;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x40, 0x00, 0, data);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN20 - 2 ON cases - Open
+    ParseCANID("18FF021E", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x02;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN21 - 2 ON cases - ALL INVALID
+    ParseCANID("18FF021E", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x01;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN22 - 2 ON cases - OPEN
+    ParseCANID("18FF021E", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x00;
+    data[1] = 0x80;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN23 - 6 ON cases - DOOR LOCK
+    ParseCANID("18FF031A", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x00;
+    data[1] = 0x00;
+    data[2] = 0xA2;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+    
+    ParseCANID("18FF041A", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x00;
+    data[1] = 0x00;
+    data[2] = 0xA2;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+    
+    ParseCANID("18FF051A", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x00;
+    data[1] = 0x00;
+    data[2] = 0xA2;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+    
+    ParseCANID("18FF061A", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x00;
+    data[1] = 0x00;
+    data[2] = 0xA2;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN24 - 6 ON cases - DOOR UNLOCK
+    ParseCANID("18FF031A", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x00;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0xA2;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+    
+    ParseCANID("18FF041A", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x00;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0xA2;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+    
+     ParseCANID("18FF051A", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x00;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0xA2;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+    
+    ParseCANID("18FF061A", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x00;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0xA2;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+    
+
+    // IN25 - 2 ON cases - Window Up Driver Front
+    ParseCANID("18FF031A", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x90;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN26 - 2 ON cases - Window Down Driver Front
+    ParseCANID("18FF031A", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x00;
+    data[1] = 0x90;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN27 - 2 ON cases - Window Up Passenger Front
+    ParseCANID("18FF041A", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x90;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN28 - 2 ON cases - Window Down Passenger Front
+    ParseCANID("18FF041A", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x00;
+    data[1] = 0x90;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN29 - 2 ON cases - Window Up Driver Rear
+    ParseCANID("18FF051A", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x90;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN30 - 2 ON cases - Window Down Driver Rear
+    ParseCANID("18FF051A", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x00;
+    data[1] = 0x90;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN31 - 2 ON cases - Window Up Passenger Rear
+    ParseCANID("18FF061A", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x90;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN32 - 2 ON cases - Window Down Passenger Rear
+    ParseCANID("18FF061A", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x00;
+    data[1] = 0x90;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN33 - 1 ON case - ALL INVALID
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN34 - 1 ON case - ALL INVALID
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN35 - 1 ON case - ALL INVALID
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN36 - 1 ON case - ALL INVALID
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN37 - 1 ON case - ALL INVALID
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN38 - 1 ON case - ALL INVALID
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN39 - 2 ON cases - ALL INVALID
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN40 - 2 ON cases - ALL INVALID
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+    
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN41 - 1 ON case - ALL INVALID
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN42 - 1 ON case - ALL INVALID
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN43 - 1 ON case - ALL INVALID
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // IN44 - 1 ON case - ALL INVALID
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // ========================================
+    // OFF Cases: 20 total - UNIQUE CAN IDs per input
+    // ========================================
+    // Each input gets unique CAN IDs to avoid aggregation
+    // IN01: 18FF011E, 18FF021E (data: 0x01)
+    addr = 0x0D62;  // OFF cases start at 0x0D62
+    // IN02: 18FF031E, 18FF041E (data: 0x02)
+    // IN25: 18FF051E, 18FF061E (data: 0x19)
+    // IN26: 18FF071E, 18FF081E (data: 0x1A)
+    // etc.
+
+    // ============================================================
+    // IN01 (array index 0) - Ignition - 2 OFF cases
+    // ============================================================
+    // OFF Case 1: 18FF011E
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // OFF Case 2: 18FF021E
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+
+    // ============================================================
+    // IN02 (array index 1) - Starter - 2 OFF cases
+    // ============================================================
+    // OFF Case 1: 18FF031E (unique for IN02)
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // OFF Case 2: 18FF041E (unique for IN02)
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+    // 32-byte gap between IN02 and IN25 OFF cases (as noted in eeprom_cases.c)
+    addr += 32;
+
+    // ============================================================
+    // IN25 (array index 24) - Driver Front Window Up - 2 OFF cases
+    // ============================================================
+    // OFF Case 1: Window Up Driver Front
+    ParseCANID("18FF031A", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x80;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+
+    // OFF Case 2: 18FF061E
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+
+    // ============================================================
+    // IN26 (array index 25) - Driver Front Window Down - 2 OFF cases
+    // ============================================================
+    // OFF Case 1: Window Down Driver Front
+    ParseCANID("18FF031A", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x00;
+    data[1] = 0x80;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+
+    // OFF Case 2: 18FF081E
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+
+    // ============================================================
+    // IN27 (array index 26) - Passenger Front Window Up - 2 OFF cases
+    // ============================================================
+    // OFF Case 1: Window Up Passenger Front
+    ParseCANID("18FF041A", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x80;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+
+    // OFF Case 2: 18FF0A1E
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+
+    // ============================================================
+    // IN28 (array index 27) - Passenger Front Window Down - 2 OFF cases
+    // ============================================================
+    // OFF Case 1: Window Down Passenger Front
+    ParseCANID("18FF041A", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x00;
+    data[1] = 0x80;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+
+    // OFF Case 2: 18FF0C1E
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+
+    // ============================================================
+    // IN29 (array index 28) - Driver Rear Window Up - 2 OFF cases
+    // ============================================================
+    // OFF Case 1: Window Up Driver Rear
+    ParseCANID("18FF051A", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x80;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+
+    // OFF Case 2: 18FF0E1E
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+
+    // ============================================================
+    // IN30 (array index 29) - Driver Rear Window Down - 2 OFF cases
+    // ============================================================
+    // OFF Case 1: Window Down Driver Rear
+    ParseCANID("18FF051A", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x00;
+    data[1] = 0x80;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+
+    // OFF Case 2: 18FF101E
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+
+    // ============================================================
+    // IN31 (array index 30) - Passenger Rear Window Up - 2 OFF cases
+    // ============================================================
+    // OFF Case 1: Window Up Passenger Rear
+    ParseCANID("18FF061A", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x80;
+    data[1] = 0x00;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+
+    // OFF Case 2: 18FF121E
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+
+    // ============================================================
+    // IN32 (array index 31) - Passenger Rear Window Down - 2 OFF cases
+    // ============================================================
+    // OFF Case 1: Window Down Passenger Rear
+    ParseCANID("18FF061A", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x00;
+    data[1] = 0x80;
+    data[2] = 0x00;
+    data[3] = 0x00;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    data[6] = 0x00;
+    data[7] = 0x00;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    addr += 32;
+
+    // OFF Case 2: 18FF141E
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
+
+
+    // ========================================
+    // Write init stamp at byte 7 (0x0007)
+    // ========================================
+    EEPROM_WriteBytePair(0x0006, DEFAULT_REBROADCAST_MODE, DEFAULT_INIT_STAMP);
+}
+
+/*
+ * RUNTIME BYTE WRITE FUNCTION - WITH INTERRUPTS FULLY DISABLED
+ * 
+ * Uses original function name EEPROM_Init_WriteByte for compatibility
+ */
+uint8_t EEPROM_Init_WriteByte(uint16_t byte_addr, uint8_t value) {
+    // Bounds check
+    if(byte_addr >= 0x1000) {
+        write_errors++;
+        last_error_type = 3;
+        return 0;  // Return failure
+    }
+    
+    // Disable Timer1 interrupt completely
+    uint16_t saved_iec = IEC0bits.T1IE;
+    IEC0bits.T1IE = 0;
+    
+    // Clear any pending Timer1 interrupt flag
+    IFS0bits.T1IF = 0;
+    
+    // Delay to ensure any pending operations complete
+    __delay_us(100);
+    
+    // Read the current word containing this byte
+    uint16_t word_addr = byte_addr & 0xFFFE;  // Round down to word boundary
+    
+    TBLPAG = 0x7F;
+    uint16_t current_word = __builtin_tblrdl(0xF000 + word_addr);
+    
+    // Modify the appropriate byte
+    uint16_t new_word;
+    if(byte_addr & 0x01) {
+        // Odd address - modify high byte
+        new_word = (current_word & 0x00FF) | ((uint16_t)value << 8);
+    } else {
+        // Even address - modify low byte
+        new_word = (current_word & 0xFF00) | value;
+    }
+    
+    // Only write if value changed
+    if(new_word != current_word) {
+        // Erase the word
+        TBLPAG = 0x7F;
+        __builtin_tblwtl(0xF000 + word_addr, 0xFFFF);
+        
+        NVMCON = 0x4044;  // Word erase
+        
+        asm volatile ("disi #5");
+        asm volatile ("mov #0x55, W0");
+        asm volatile ("mov W0, NVMKEY");
+        asm volatile ("mov #0xAA, W0");
+        asm volatile ("mov W0, NVMKEY");
+        asm volatile ("bset NVMCON, #15");
+        asm volatile ("nop");
+        asm volatile ("nop");
+        
+        // Wait with timeout
+        uint16_t timeout = 30000;
+        while((NVMCON & 0x8000) && timeout > 0) {
+            timeout--;
+        }
+        
+        if(timeout == 0) {
+            write_errors++;
+            last_error_type = 1;
+            // Re-enable Timer1 interrupt and return
+            IFS0bits.T1IF = 0;
+            IEC0bits.T1IE = saved_iec;
+            return 0;  // Return failure
+        }
+        
+        __delay_ms(3);
+        
+        // Write the new word
+        TBLPAG = 0x7F;
+        __builtin_tblwtl(0xF000 + word_addr, new_word);
+        
+        NVMCON = 0x4004;  // Word write
+        
+        asm volatile ("disi #5");
+        asm volatile ("mov #0x55, W0");
+        asm volatile ("mov W0, NVMKEY");
+        asm volatile ("mov #0xAA, W0");
+        asm volatile ("mov W0, NVMKEY");
+        asm volatile ("bset NVMCON, #15");
+        asm volatile ("nop");
+        asm volatile ("nop");
+        
+        // Wait with timeout
+        timeout = 30000;
+        while((NVMCON & 0x8000) && timeout > 0) {
+            timeout--;
+        }
+        
+        if(timeout == 0) {
+            write_errors++;
+            last_error_type = 1;
+            // Re-enable Timer1 interrupt and return
+            IFS0bits.T1IF = 0;
+            IEC0bits.T1IE = saved_iec;
+            return 0;  // Return failure
+        }
+        
+        __delay_ms(3);
+        
+        // Verify
+        TBLPAG = 0x7F;
+        uint16_t verify = __builtin_tblrdl(0xF000 + word_addr);
+        
+        if(verify != new_word) {
+            write_errors++;
+            last_error_type = 2;
+        } else {
+            words_written++;
+            last_error_type = 0;
+        }
+    }
+    
+    // Clear Timer1 interrupt flag before re-enabling
+    IFS0bits.T1IF = 0;
+    
+    // Re-enable Timer1 interrupt
+    IEC0bits.T1IE = saved_iec;
+    
+    return 1;  // Return success
+}
+
+// Diagnostics
+uint16_t EEPROM_GetWriteErrors(void) {
+    return write_errors;
+}
+
+uint16_t EEPROM_GetWordsWritten(void) {
+    return words_written;
+}
+
+uint8_t EEPROM_GetLastErrorType(void) {
+    return last_error_type;
+}
