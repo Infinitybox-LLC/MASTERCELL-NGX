@@ -28,7 +28,7 @@
 
 // Climate control CAN message
 // CAN ID: 0x18FF9901 (Priority 6, PGN 0xFF99, SA 0x01)
-#define CLIMATE_PGN             0xFF99
+#define CLIMATE_PGN             0xAF00
 #define CLIMATE_SOURCE_ADDR     0x01
 
 // ============================================================================

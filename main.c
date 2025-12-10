@@ -20,6 +20,7 @@
 #include "can_config.h"
 #include "network_inventory.h"
 #include "climate.h"
+#include "outputs.h"
  
  // Debug variables from eeprom_cases.c
  
@@ -123,6 +124,7 @@
     InLink_Init();
     Network_Init();
     Climate_Init();
+    Outputs_Init();
      
      LCD_Clear();
      LCD_SetCursor(0, 0);
@@ -367,8 +369,17 @@
                 IEC0bits.T1IE = 1;
             }
             
-            // Process climate control messages (PGN 0xFF99)
+            // Process climate control messages (PGN 0xAF00, bytes 0-2)
             if (Climate_ProcessMessage(can_msg.id, can_msg.data)) {
+                IEC0bits.T1IE = 0;
+                if (led_on_timer == 0) {
+                    led_on_timer = 50;
+                }
+                IEC0bits.T1IE = 1;
+            }
+            
+            // Process MOSFET output control messages (PGN 0xAF00, byte 3)
+            if (Outputs_ProcessMessage(can_msg.id, can_msg.data)) {
                 IEC0bits.T1IE = 0;
                 if (led_on_timer == 0) {
                     led_on_timer = 50;
@@ -515,21 +526,22 @@
      return 0;
  }
  
- void InitUnusedPins(void) {
-     // ========================================================================
-     // MOSFET Gate Drivers - CRITICAL: Must be driven LOW to turn off MOSFETs
-     // Floating gates can partially turn on MOSFETs causing excessive current
-     // ========================================================================
-     
-     TRISBbits.TRISB15 = 0;  LATBbits.LATB15 = 0;  // RB15 - MOSFET gate OFF
-     TRISFbits.TRISF2 = 0;   LATFbits.LATF2 = 0;   // RF2 - MOSFET gate OFF
-     TRISFbits.TRISF3 = 0;   LATFbits.LATF3 = 0;   // RF3 - MOSFET gate OFF
-     TRISFbits.TRISF4 = 0;   LATFbits.LATF4 = 0;   // RF4 - MOSFET gate OFF
-     TRISFbits.TRISF5 = 0;   LATFbits.LATF5 = 0;   // RF5 - MOSFET gate OFF
-     TRISFbits.TRISF6 = 0;   LATFbits.LATF6 = 0;   // RF6 - MOSFET gate OFF
-     TRISGbits.TRISG2 = 0;   LATGbits.LATG2 = 0;   // RG2 - MOSFET gate OFF
-     TRISGbits.TRISG3 = 0;   LATGbits.LATG3 = 0;   // RG3 - MOSFET gate OFF
-     
+void InitUnusedPins(void) {
+    // ========================================================================
+    // MOSFET Gate Drivers - CRITICAL: Must be driven LOW immediately at startup
+    // Floating gates can partially turn on MOSFETs causing excessive current
+    // Note: Outputs_Init() will take over control of these pins later
+    // ========================================================================
+    
+    TRISBbits.TRISB15 = 0;  LATBbits.LATB15 = 0;  // RB15 - MOSFET gate OFF
+    TRISFbits.TRISF2 = 0;   LATFbits.LATF2 = 0;   // RF2 - MOSFET gate OFF
+    TRISFbits.TRISF3 = 0;   LATFbits.LATF3 = 0;   // RF3 - MOSFET gate OFF
+    TRISFbits.TRISF4 = 0;   LATFbits.LATF4 = 0;   // RF4 - MOSFET gate OFF
+    TRISFbits.TRISF5 = 0;   LATFbits.LATF5 = 0;   // RF5 - MOSFET gate OFF
+    TRISFbits.TRISF6 = 0;   LATFbits.LATF6 = 0;   // RF6 - MOSFET gate OFF
+    TRISGbits.TRISG2 = 0;   LATGbits.LATG2 = 0;   // RG2 - MOSFET gate OFF
+    TRISGbits.TRISG3 = 0;   LATGbits.LATG3 = 0;   // RG3 - MOSFET gate OFF
+    
     // ========================================================================
     // Digital Potentiometer - Now handled by Climate_Init()
     // Pins RG6, RG7, RG8 (SPI2) and RB2, RB3, RB4 (control)

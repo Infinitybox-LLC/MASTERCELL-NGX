@@ -51,17 +51,17 @@ OBJECTDIR=build/${CND_CONF}/${IMAGE_TYPE}
 DISTDIR=dist/${CND_CONF}/${IMAGE_TYPE}
 
 # Source Files Quoted if spaced
-SOURCEFILES_QUOTED_IF_SPACED=main.c lcd.c buttons.c inputs.c j1939.c eeprom_cases.c eeprom_init.c eeprom_config.c can_config.c network_inventory.c inlink.c eeprom_init_front_engine.c eeprom_init_rear_engine.c eeprom_init_customer.c climate.c
+SOURCEFILES_QUOTED_IF_SPACED=main.c lcd.c buttons.c inputs.c j1939.c eeprom_cases.c eeprom_init.c eeprom_config.c can_config.c network_inventory.c inlink.c eeprom_init_front_engine.c eeprom_init_rear_engine.c eeprom_init_customer.c climate.c outputs.c
 
 # Object Files Quoted if spaced
-OBJECTFILES_QUOTED_IF_SPACED=${OBJECTDIR}/main.o ${OBJECTDIR}/lcd.o ${OBJECTDIR}/buttons.o ${OBJECTDIR}/inputs.o ${OBJECTDIR}/j1939.o ${OBJECTDIR}/eeprom_cases.o ${OBJECTDIR}/eeprom_init.o ${OBJECTDIR}/eeprom_config.o ${OBJECTDIR}/can_config.o ${OBJECTDIR}/network_inventory.o ${OBJECTDIR}/inlink.o ${OBJECTDIR}/eeprom_init_front_engine.o ${OBJECTDIR}/eeprom_init_rear_engine.o ${OBJECTDIR}/eeprom_init_customer.o ${OBJECTDIR}/climate.o
-POSSIBLE_DEPFILES=${OBJECTDIR}/main.o.d ${OBJECTDIR}/lcd.o.d ${OBJECTDIR}/buttons.o.d ${OBJECTDIR}/inputs.o.d ${OBJECTDIR}/j1939.o.d ${OBJECTDIR}/eeprom_cases.o.d ${OBJECTDIR}/eeprom_init.o.d ${OBJECTDIR}/eeprom_config.o.d ${OBJECTDIR}/can_config.o.d ${OBJECTDIR}/network_inventory.o.d ${OBJECTDIR}/inlink.o.d ${OBJECTDIR}/eeprom_init_front_engine.o.d ${OBJECTDIR}/eeprom_init_rear_engine.o.d ${OBJECTDIR}/eeprom_init_customer.o.d ${OBJECTDIR}/climate.o.d
+OBJECTFILES_QUOTED_IF_SPACED=${OBJECTDIR}/main.o ${OBJECTDIR}/lcd.o ${OBJECTDIR}/buttons.o ${OBJECTDIR}/inputs.o ${OBJECTDIR}/j1939.o ${OBJECTDIR}/eeprom_cases.o ${OBJECTDIR}/eeprom_init.o ${OBJECTDIR}/eeprom_config.o ${OBJECTDIR}/can_config.o ${OBJECTDIR}/network_inventory.o ${OBJECTDIR}/inlink.o ${OBJECTDIR}/eeprom_init_front_engine.o ${OBJECTDIR}/eeprom_init_rear_engine.o ${OBJECTDIR}/eeprom_init_customer.o ${OBJECTDIR}/climate.o ${OBJECTDIR}/outputs.o
+POSSIBLE_DEPFILES=${OBJECTDIR}/main.o.d ${OBJECTDIR}/lcd.o.d ${OBJECTDIR}/buttons.o.d ${OBJECTDIR}/inputs.o.d ${OBJECTDIR}/j1939.o.d ${OBJECTDIR}/eeprom_cases.o.d ${OBJECTDIR}/eeprom_init.o.d ${OBJECTDIR}/eeprom_config.o.d ${OBJECTDIR}/can_config.o.d ${OBJECTDIR}/network_inventory.o.d ${OBJECTDIR}/inlink.o.d ${OBJECTDIR}/eeprom_init_front_engine.o.d ${OBJECTDIR}/eeprom_init_rear_engine.o.d ${OBJECTDIR}/eeprom_init_customer.o.d ${OBJECTDIR}/climate.o.d ${OBJECTDIR}/outputs.o.d
 
 # Object Files
-OBJECTFILES=${OBJECTDIR}/main.o ${OBJECTDIR}/lcd.o ${OBJECTDIR}/buttons.o ${OBJECTDIR}/inputs.o ${OBJECTDIR}/j1939.o ${OBJECTDIR}/eeprom_cases.o ${OBJECTDIR}/eeprom_init.o ${OBJECTDIR}/eeprom_config.o ${OBJECTDIR}/can_config.o ${OBJECTDIR}/network_inventory.o ${OBJECTDIR}/inlink.o ${OBJECTDIR}/eeprom_init_front_engine.o ${OBJECTDIR}/eeprom_init_rear_engine.o ${OBJECTDIR}/eeprom_init_customer.o ${OBJECTDIR}/climate.o
+OBJECTFILES=${OBJECTDIR}/main.o ${OBJECTDIR}/lcd.o ${OBJECTDIR}/buttons.o ${OBJECTDIR}/inputs.o ${OBJECTDIR}/j1939.o ${OBJECTDIR}/eeprom_cases.o ${OBJECTDIR}/eeprom_init.o ${OBJECTDIR}/eeprom_config.o ${OBJECTDIR}/can_config.o ${OBJECTDIR}/network_inventory.o ${OBJECTDIR}/inlink.o ${OBJECTDIR}/eeprom_init_front_engine.o ${OBJECTDIR}/eeprom_init_rear_engine.o ${OBJECTDIR}/eeprom_init_customer.o ${OBJECTDIR}/climate.o ${OBJECTDIR}/outputs.o
 
 # Source Files
-SOURCEFILES=main.c lcd.c buttons.c inputs.c j1939.c eeprom_cases.c eeprom_init.c eeprom_config.c can_config.c network_inventory.c inlink.c eeprom_init_front_engine.c eeprom_init_rear_engine.c eeprom_init_customer.c climate.c
+SOURCEFILES=main.c lcd.c buttons.c inputs.c j1939.c eeprom_cases.c eeprom_init.c eeprom_config.c can_config.c network_inventory.c inlink.c eeprom_init_front_engine.c eeprom_init_rear_engine.c eeprom_init_customer.c climate.c outputs.c
 
 
 
@@ -179,6 +179,12 @@ ${OBJECTDIR}/climate.o: climate.c  .generated_files/flags/default/bc7728c1e02e66
 	@${RM} ${OBJECTDIR}/climate.o 
 	${MP_CC} $(MP_EXTRA_CC_PRE)  climate.c  -o ${OBJECTDIR}/climate.o  -c -mcpu=$(MP_PROCESSOR_OPTION)  -MP -MMD -MF "${OBJECTDIR}/climate.o.d"      -g -D__DEBUG     -omf=elf -DXPRJ_default=$(CND_CONF)    $(COMPARISON_BUILD)  -msmall-data -O0 -msmart-io=1 -Wall -msfr-warn=off    -mdfp="${DFP_DIR}/xc16"
 	
+${OBJECTDIR}/outputs.o: outputs.c  .generated_files/flags/default/9059ce0b774a3639f8a8f31d936e4fbc1ff12492 .generated_files/flags/default/da39a3ee5e6b4b0d3255bfef95601890afd80709
+	@${MKDIR} "${OBJECTDIR}" 
+	@${RM} ${OBJECTDIR}/outputs.o.d 
+	@${RM} ${OBJECTDIR}/outputs.o 
+	${MP_CC} $(MP_EXTRA_CC_PRE)  outputs.c  -o ${OBJECTDIR}/outputs.o  -c -mcpu=$(MP_PROCESSOR_OPTION)  -MP -MMD -MF "${OBJECTDIR}/outputs.o.d"      -g -D__DEBUG     -omf=elf -DXPRJ_default=$(CND_CONF)    $(COMPARISON_BUILD)  -msmall-data -O0 -msmart-io=1 -Wall -msfr-warn=off    -mdfp="${DFP_DIR}/xc16"
+	
 else
 ${OBJECTDIR}/main.o: main.c  .generated_files/flags/default/a3deb946f30e57cf93bd36ab405dd1431d774f5 .generated_files/flags/default/da39a3ee5e6b4b0d3255bfef95601890afd80709
 	@${MKDIR} "${OBJECTDIR}" 
@@ -269,6 +275,12 @@ ${OBJECTDIR}/climate.o: climate.c  .generated_files/flags/default/2e53dbb5898270
 	@${RM} ${OBJECTDIR}/climate.o.d 
 	@${RM} ${OBJECTDIR}/climate.o 
 	${MP_CC} $(MP_EXTRA_CC_PRE)  climate.c  -o ${OBJECTDIR}/climate.o  -c -mcpu=$(MP_PROCESSOR_OPTION)  -MP -MMD -MF "${OBJECTDIR}/climate.o.d"        -g -omf=elf -DXPRJ_default=$(CND_CONF)    $(COMPARISON_BUILD)  -msmall-data -O0 -msmart-io=1 -Wall -msfr-warn=off    -mdfp="${DFP_DIR}/xc16"
+	
+${OBJECTDIR}/outputs.o: outputs.c  .generated_files/flags/default/c2f12033498df4cf1ed5dbc650deaab0682d2994 .generated_files/flags/default/da39a3ee5e6b4b0d3255bfef95601890afd80709
+	@${MKDIR} "${OBJECTDIR}" 
+	@${RM} ${OBJECTDIR}/outputs.o.d 
+	@${RM} ${OBJECTDIR}/outputs.o 
+	${MP_CC} $(MP_EXTRA_CC_PRE)  outputs.c  -o ${OBJECTDIR}/outputs.o  -c -mcpu=$(MP_PROCESSOR_OPTION)  -MP -MMD -MF "${OBJECTDIR}/outputs.o.d"        -g -omf=elf -DXPRJ_default=$(CND_CONF)    $(COMPARISON_BUILD)  -msmall-data -O0 -msmart-io=1 -Wall -msfr-warn=off    -mdfp="${DFP_DIR}/xc16"
 	
 endif
 
