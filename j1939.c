@@ -53,14 +53,19 @@ void J1939_Init(void) {
     
     C1TX0CONbits.TXPRI = 0b11;
     
-    C1RX0CONbits.DBEN = 0;
+    // Enable double buffering - RX0 and RX1 work as FIFO
+    // This gives us 2 hardware message slots instead of 1
+    // When RX0 is full, next message goes to RX1
+    // When we read RX0, RX1 shifts to RX0 automatically
+    C1RX0CONbits.DBEN = 1;
     
     J1939_SetPromiscuousMode();
     
     C1INTEbits.RX0IE = 1;
     
-    IEC1 &= ~0x0002;
-    IFS1 &= ~0x0002;
+    // Disable CAN interrupt - use polling only (interrupt caused boot issues)
+    IFS1bits.C1IF = 0;  // Clear any pending interrupt flag
+    IEC1bits.C1IE = 0;  // DISABLE CAN interrupt - use polling instead
     
     C1CTRLbits.REQOP = 0;
     timeout = 10000;
@@ -75,7 +80,7 @@ void __attribute__((interrupt, no_auto_psv)) _C1Interrupt(void) {
             rx_overflow_flag = 1;
             rx_overflow_count++;
             C1RX0CONbits.RXFUL = 0;
-            IFS1 &= ~0x0002;
+            IFS1bits.C1IF = 0;
             return;
         }
         
@@ -130,7 +135,7 @@ void __attribute__((interrupt, no_auto_psv)) _C1Interrupt(void) {
         C1RX0CONbits.RXFUL = 0;
     }
     
-    IFS1 &= ~0x0002;
+    IFS1bits.C1IF = 0;
 }
 
 uint8_t J1939_ReceiveMessage(CAN_RxMessage *msg) {
@@ -138,6 +143,8 @@ uint8_t J1939_ReceiveMessage(CAN_RxMessage *msg) {
         return 0;
     }
     
+    // With DBEN=1, we have two RX buffers working as FIFO
+    // Check RX0 first (primary buffer)
     if (C1RX0CONbits.RXFUL) {
         uint16_t sid_reg = C1RX0SID;
         uint16_t eid_reg = C1RX0EID;
@@ -148,21 +155,14 @@ uint8_t J1939_ReceiveMessage(CAN_RxMessage *msg) {
         debug_dlc_reg = dlc_reg;
         
         // CORRECT extraction for dsPIC30F6012A:
-        // C1RX0SID[12:2] = EID[28:18] (11 bits)
         uint16_t eid_28_18 = (sid_reg >> 2) & 0x7FF;
-        
-        // C1RX0EID[11:0] = EID[17:6] (12 bits)
         uint16_t eid_17_6 = eid_reg & 0xFFF;
-        
-        // C1RX0DLC[15:10] = EID[5:0] (6 bits)
         uint8_t eid_5_0 = (dlc_reg >> 10) & 0x3F;
         
-        // Reconstruct 29-bit extended ID
         msg->id = ((uint32_t)eid_28_18 << 18) |
                   ((uint32_t)eid_17_6 << 6) |
                   eid_5_0;
         
-        // C1RX0DLC[3:0] = DLC
         msg->dlc = dlc_reg & 0x0F;
         if (msg->dlc > 8) msg->dlc = 8;
         msg->valid = 1;
@@ -187,22 +187,54 @@ uint8_t J1939_ReceiveMessage(CAN_RxMessage *msg) {
         return 1;
     }
     
-    if (rx_count == 0) {
-        return 0;
+    // Check RX1 (overflow buffer when DBEN=1)
+    // Messages go here when RX0 is full
+    if (C1RX1CONbits.RXFUL) {
+        uint16_t sid_reg = C1RX1SID;
+        uint16_t eid_reg = C1RX1EID;
+        uint16_t dlc_reg = C1RX1DLC;
+        
+        debug_sid_reg = sid_reg;
+        debug_eid_reg = eid_reg;
+        debug_dlc_reg = dlc_reg;
+        
+        // CORRECT extraction for dsPIC30F6012A:
+        uint16_t eid_28_18 = (sid_reg >> 2) & 0x7FF;
+        uint16_t eid_17_6 = eid_reg & 0xFFF;
+        uint8_t eid_5_0 = (dlc_reg >> 10) & 0x3F;
+        
+        msg->id = ((uint32_t)eid_28_18 << 18) |
+                  ((uint32_t)eid_17_6 << 6) |
+                  eid_5_0;
+        
+        msg->dlc = dlc_reg & 0x0F;
+        if (msg->dlc > 8) msg->dlc = 8;
+        msg->valid = 1;
+        
+        uint16_t data_word;
+        data_word = C1RX1B1;
+        msg->data[0] = data_word & 0xFF;
+        msg->data[1] = (data_word >> 8) & 0xFF;
+        data_word = C1RX1B2;
+        msg->data[2] = data_word & 0xFF;
+        msg->data[3] = (data_word >> 8) & 0xFF;
+        data_word = C1RX1B3;
+        msg->data[4] = data_word & 0xFF;
+        msg->data[5] = (data_word >> 8) & 0xFF;
+        data_word = C1RX1B4;
+        msg->data[6] = data_word & 0xFF;
+        msg->data[7] = (data_word >> 8) & 0xFF;
+        
+        C1RX1CONbits.RXFUL = 0;
+        rx_message_count++;
+        
+        return 1;
     }
     
-    IEC1 &= ~0x0002;
-    
-    memcpy(msg, &rx_buffer[rx_read_index], sizeof(CAN_RxMessage));
-    
-    rx_buffer[rx_read_index].valid = 0;
-    
-    rx_read_index = (rx_read_index + 1) % CAN_RX_BUFFER_SIZE;
-    rx_count--;
-    
-    IEC1 |= 0x0002;
-    
-    return 1;
+    // No messages available in hardware buffers
+    // Note: rx_buffer (software buffer) is not used in polling mode
+    // since the ISR is disabled and never populates it
+    return 0;
 }
 
 void J1939_ConfigureFilters(uint16_t read_pgn, uint8_t read_sa, 

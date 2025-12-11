@@ -44,6 +44,12 @@ void InLink_ProcessMessage(uint32_t can_id, uint8_t *data) {
         return;
     }
     
+    // Exclude AF00 - it's handled by Climate and Outputs, not inLINK
+    // Only process AF01, AF02, AF03, etc.
+    if (pgn == 0xAF00) {
+        return;
+    }
+    
     // Debug: Track inLINK message reception
     inlink_messages_received++;
     last_inlink_id = can_id;

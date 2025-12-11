@@ -10,9 +10,11 @@
 #include <libpic30.h>
 
 // Timing delays (in microseconds)
+// HD44780 datasheet specs: commands ~37us, clear/home ~1.52ms
+// Using slightly conservative values for reliability
 #define LCD_DELAY_ENABLE    1     // Enable pulse width
-#define LCD_DELAY_COMMAND   2000  // Command execution time
-#define LCD_DELAY_CLEAR     5000  // Clear/Home command time
+#define LCD_DELAY_COMMAND   50    // Command execution time (was 2000 - way too long!)
+#define LCD_DELAY_CLEAR     2000  // Clear/Home command time (was 5000)
 
 // Private function to write 8 bits to data bus
 static void LCD_WriteByte(uint8_t byte) {

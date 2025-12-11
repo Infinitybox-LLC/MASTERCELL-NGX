@@ -320,7 +320,9 @@ void EEPROM_LoadRearEngine(void) {
     EEPROM_WriteInvalidCase(addr);
     addr += 32;
 
-    // IN11 - 2 ON cases- Brake Light- 1 Filament
+    // IN11 - 2 ON cases- Brake Light- 1 Filament (Can Be Overridden by turn signals)
+    // Uses 0xC0 which overlaps with Left Turn (0x80) + Right Turn (0x40)
+    // config_byte = 0x04 enables single filament override mode
     ParseCANID("18FF021E", &priority, &pgn, &source_addr);
     memset(data, 0x00, 8);
     data[0] = 0xC0;
@@ -331,7 +333,7 @@ void EEPROM_LoadRearEngine(void) {
     data[5] = 0x00;
     data[6] = 0x00;
     data[7] = 0x00;
-    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x02, 0x00, 0, data);  
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x04, 0x00, 0, data);  // 0x04 = can be overridden
     addr += 32;
     EEPROM_WriteInvalidCase(addr);
     addr += 32;

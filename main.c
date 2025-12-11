@@ -87,12 +87,13 @@
  uint8_t inventory_scroll_position = 0;
  volatile uint32_t system_time_ms = 0;
  
- // PHASE 3: Broadcast reason codes
- #define BROADCAST_REASON_PATTERN_TICK   0
- #define BROADCAST_REASON_STATE_CHANGE   1
- 
- void Timer1_Init(void);
- void TransmitAggregatedMessages(uint8_t reason);  // PHASE 3: Added reason parameter
+// PHASE 3: Broadcast reason codes
+#define BROADCAST_REASON_PATTERN_TICK   0
+#define BROADCAST_REASON_STATE_CHANGE   1
+
+void Timer1_Init(void);
+void TransmitAggregatedMessages(uint8_t reason);  // PHASE 3: Added reason parameter
+uint8_t ProcessPendingCANMessages(void);  // Drain CAN FIFO, returns 1 if inLINK detected
  void DisplayMainScreen(void);
  void DisplayMenuScreen(void);
  void DisplaySwitchScreen(void);
@@ -351,60 +352,63 @@
      backlight_timer = 5000;  // Start 5-second timer for main screen at startup
      DisplayMainScreen();
      
-     while(1) {
-         CAN_RxMessage can_msg;
-         if (J1939_ReceiveMessage(&can_msg)) {
-             last_rx_can_id = can_msg.id;
-             last_rx_pgn = (can_msg.id >> 8) & 0xFFFF;
-             
-             uint8_t rx_sa = can_msg.id & 0xFF;
-             uint16_t rx_pgn = (can_msg.id >> 8) & 0xFFFF;
-             Network_UpdateDevice(rx_sa, rx_pgn, system_time_ms);
-             
-            if (CAN_Config_ProcessMessage((CAN_Message*)&can_msg)) {
+    while(1) {
+        // Process ALL pending CAN messages before doing other work
+        // This drains the hardware FIFO to prevent message loss
+        CAN_RxMessage can_msg;
+        while (J1939_ReceiveMessage(&can_msg)) {
+            last_rx_can_id = can_msg.id;
+            last_rx_pgn = (can_msg.id >> 8) & 0xFFFF;
+            
+            uint8_t rx_sa = can_msg.id & 0xFF;
+            uint16_t rx_pgn = (can_msg.id >> 8) & 0xFFFF;
+            Network_UpdateDevice(rx_sa, rx_pgn, system_time_ms);
+            
+           if (CAN_Config_ProcessMessage((CAN_Message*)&can_msg)) {
+               IEC0bits.T1IE = 0;
+               if (led_on_timer == 0) {
+                   led_on_timer = 50;
+               }
+               IEC0bits.T1IE = 1;
+           }
+           
+           // Process climate control messages (PGN 0xAF00, bytes 0-2)
+           if (Climate_ProcessMessage(can_msg.id, can_msg.data)) {
+               IEC0bits.T1IE = 0;
+               if (led_on_timer == 0) {
+                   led_on_timer = 50;
+               }
+               IEC0bits.T1IE = 1;
+           }
+           
+           // Process MOSFET output control messages (PGN 0xAF00, byte 3)
+           if (Outputs_ProcessMessage(can_msg.id, can_msg.data)) {
+               IEC0bits.T1IE = 0;
+               if (led_on_timer == 0) {
+                   led_on_timer = 50;
+               }
+               IEC0bits.T1IE = 1;
+           }
+           
+           // Process inLINK messages and trigger immediate broadcast if detected
+            // Check if this is an inLINK message (PGN starting with A, but NOT AF00)
+            // AF00 is handled by Climate/Outputs, only AF01+ are inLINK messages
+            uint16_t pgn = (can_msg.id >> 8) & 0xFFFF;
+            uint8_t pgn_high = (pgn >> 8) & 0xFF;
+            uint8_t inlink_detected = (((pgn_high & 0xF0) == 0xA0) && (pgn != 0xAF00)) ? 1 : 0;
+            
+            InLink_ProcessMessage(can_msg.id, can_msg.data);
+            
+            // Trigger broadcast if this was an inLINK message (AF01, AF02, etc.)
+            if(inlink_detected) {
+                // PHASE 3: Just set flag, remove redundant immediate call
                 IEC0bits.T1IE = 0;
-                if (led_on_timer == 0) {
-                    led_on_timer = 50;
-                }
+                state_changed = 1;
                 IEC0bits.T1IE = 1;
             }
-            
-            // Process climate control messages (PGN 0xAF00, bytes 0-2)
-            if (Climate_ProcessMessage(can_msg.id, can_msg.data)) {
-                IEC0bits.T1IE = 0;
-                if (led_on_timer == 0) {
-                    led_on_timer = 50;
-                }
-                IEC0bits.T1IE = 1;
-            }
-            
-            // Process MOSFET output control messages (PGN 0xAF00, byte 3)
-            if (Outputs_ProcessMessage(can_msg.id, can_msg.data)) {
-                IEC0bits.T1IE = 0;
-                if (led_on_timer == 0) {
-                    led_on_timer = 50;
-                }
-                IEC0bits.T1IE = 1;
-            }
-            
-            // Process inLINK messages and trigger immediate broadcast if detected
-             // Check if this is an inLINK message (PGN starting with A)
-             uint16_t pgn = (can_msg.id >> 8) & 0xFFFF;
-             uint8_t pgn_high = (pgn >> 8) & 0xFF;
-             uint8_t inlink_detected = ((pgn_high & 0xF0) == 0xA0) ? 1 : 0;
-             
-             InLink_ProcessMessage(can_msg.id, can_msg.data);
-             
-             // Trigger broadcast if this was an inLINK message
-             if(inlink_detected) {
-                 // PHASE 3: Just set flag, remove redundant immediate call
-                 IEC0bits.T1IE = 0;
-                 state_changed = 1;
-                 IEC0bits.T1IE = 1;
-             }
-         }
-         
-         if(led_on_timer > 0) {
+        }
+        
+        if(led_on_timer > 0) {
              LED_PIN = 1;
          } else {
              LED_PIN = 0;
@@ -431,33 +435,47 @@
              LCD_Backlight(0);  // Turn off backlight after timeout
          }
          
-         if(pattern_changed) {
-             IEC0bits.T1IE = 0;
-             pattern_changed = 0;
-             IEC0bits.T1IE = 1;
-             
-             // PHASE 3: Pass PATTERN_TICK reason
-             TransmitAggregatedMessages(BROADCAST_REASON_PATTERN_TICK);
-         }
-         
-         // PHASE 2: Check for state changes (input or inLINK)
-         if(state_changed) {
-             IEC0bits.T1IE = 0;
-             state_changed = 0;
-             IEC0bits.T1IE = 1;
-             
-             // PHASE 3: Pass STATE_CHANGE reason
-             TransmitAggregatedMessages(BROADCAST_REASON_STATE_CHANGE);
-         }
-         
-         // Check if heartbeat should be sent (set in timer interrupt)
-         if(heartbeat_pending) {
-             IEC0bits.T1IE = 0;
-             heartbeat_pending = 0;
-             IEC0bits.T1IE = 1;
-             
-             J1939_TransmitHeartbeat();
-         }
+        if(pattern_changed) {
+            IEC0bits.T1IE = 0;
+            pattern_changed = 0;
+            IEC0bits.T1IE = 1;
+            
+            // PHASE 3: Pass PATTERN_TICK reason
+            TransmitAggregatedMessages(BROADCAST_REASON_PATTERN_TICK);
+            
+            // Quick poll after transmission to prevent RX overflow
+            if (ProcessPendingCANMessages()) {
+                IEC0bits.T1IE = 0;
+                state_changed = 1;
+                IEC0bits.T1IE = 1;
+            }
+        }
+        
+        // PHASE 2: Check for state changes (input or inLINK)
+        if(state_changed) {
+            IEC0bits.T1IE = 0;
+            state_changed = 0;
+            IEC0bits.T1IE = 1;
+            
+            // PHASE 3: Pass STATE_CHANGE reason
+            TransmitAggregatedMessages(BROADCAST_REASON_STATE_CHANGE);
+            
+            // Quick poll after transmission to prevent RX overflow
+            if (ProcessPendingCANMessages()) {
+                IEC0bits.T1IE = 0;
+                state_changed = 1;
+                IEC0bits.T1IE = 1;
+            }
+        }
+        
+        // Check if heartbeat should be sent (set in timer interrupt)
+        if(heartbeat_pending) {
+            IEC0bits.T1IE = 0;
+            heartbeat_pending = 0;
+            IEC0bits.T1IE = 1;
+            
+            J1939_TransmitHeartbeat();
+        }
          
          if(scan_timer == 0) {
              Inputs_Scan();
@@ -495,36 +513,43 @@
              }
          }
          
-         if(display_timer == 0) {
-             display_timer = 500;
-             
-             Network_CheckTimeouts(system_time_ms);
-             
-             switch(current_screen) {
-                 case SCREEN_MAIN:
-                     DisplayMainScreen();
-                     break;
-                 case SCREEN_MENU:
-                     DisplayMenuScreen();
-                     break;
-                 case SCREEN_SWITCH:
-                     DisplaySwitchScreen();
-                     break;
-                 case SCREEN_INVENTORY:
-                     DisplayInventoryScreen();
-                     break;
-                 case SCREEN_SYSTEM_INFO:
-                     DisplaySystemInfoScreen();
-                     break;
-                 case SCREEN_DEBUG:
-                     DisplayDebugScreen();
-                     break;
-             }
-         }
-     }
-     
-     return 0;
- }
+        if(display_timer == 0) {
+            display_timer = 500;
+            
+            Network_CheckTimeouts(system_time_ms);
+            
+            switch(current_screen) {
+                case SCREEN_MAIN:
+                    DisplayMainScreen();
+                    break;
+                case SCREEN_MENU:
+                    DisplayMenuScreen();
+                    break;
+                case SCREEN_SWITCH:
+                    DisplaySwitchScreen();
+                    break;
+                case SCREEN_INVENTORY:
+                    DisplayInventoryScreen();
+                    break;
+                case SCREEN_SYSTEM_INFO:
+                    DisplaySystemInfoScreen();
+                    break;
+                case SCREEN_DEBUG:
+                    DisplayDebugScreen();
+                    break;
+            }
+            
+            // Quick poll after display update to prevent RX overflow
+            if (ProcessPendingCANMessages()) {
+                IEC0bits.T1IE = 0;
+                state_changed = 1;
+                IEC0bits.T1IE = 1;
+            }
+        }
+    }
+    
+    return 0;
+}
  
 void InitUnusedPins(void) {
     // ========================================================================
@@ -1062,11 +1087,45 @@ void InitUnusedPins(void) {
          LCD_Print("-- -- --   ");
      }
      
-     // Display debug counts on right side
-     LCD_SetCursor(0, 14);
- }
- 
- void TransmitAggregatedMessages(uint8_t reason) {
+    // Display debug counts on right side
+    LCD_SetCursor(0, 14);
+}
+
+/**
+ * Quickly drain any pending CAN messages from hardware FIFO
+ * Call this after potentially long operations to prevent buffer overflow
+ * Returns 1 if any inLINK message was detected, 0 otherwise
+ */
+uint8_t ProcessPendingCANMessages(void) {
+    uint8_t inlink_found = 0;
+    CAN_RxMessage can_msg;
+    
+    while (J1939_ReceiveMessage(&can_msg)) {
+        last_rx_can_id = can_msg.id;
+        last_rx_pgn = (can_msg.id >> 8) & 0xFFFF;
+        
+        uint8_t rx_sa = can_msg.id & 0xFF;
+        uint16_t rx_pgn = (can_msg.id >> 8) & 0xFFFF;
+        Network_UpdateDevice(rx_sa, rx_pgn, system_time_ms);
+        
+        CAN_Config_ProcessMessage((CAN_Message*)&can_msg);
+        Climate_ProcessMessage(can_msg.id, can_msg.data);
+        Outputs_ProcessMessage(can_msg.id, can_msg.data);
+        
+        // Check for inLINK message (AF01, AF02, etc. but NOT AF00)
+        uint16_t pgn = (can_msg.id >> 8) & 0xFFFF;
+        uint8_t pgn_high = (pgn >> 8) & 0xFF;
+        if (((pgn_high & 0xF0) == 0xA0) && (pgn != 0xAF00)) {
+            inlink_found = 1;
+        }
+        
+        InLink_ProcessMessage(can_msg.id, can_msg.data);
+    }
+    
+    return inlink_found;
+}
+
+void TransmitAggregatedMessages(uint8_t reason) {
      AggregatedMessage messages[MAX_UNIQUE_MESSAGES];
      uint8_t msg_count = EEPROM_GetAggregatedMessages(messages, MAX_UNIQUE_MESSAGES);
      last_msg_count = msg_count;

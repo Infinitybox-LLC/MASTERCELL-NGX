@@ -261,16 +261,17 @@
          return 0;
      }
      
-     // Initialize to invalid
-     case_data->valid = 0;
-     case_data->pattern_on_time = 0;
-     case_data->pattern_off_time = 0;
-     
-     // Initialize conditional logic arrays
-     for(uint8_t i = 0; i < 8; i++) {
-         case_data->must_be_on[i] = 0;
-         case_data->must_be_off[i] = 0;
-     }
+    // Initialize to invalid
+    case_data->valid = 0;
+    case_data->pattern_on_time = 0;
+    case_data->pattern_off_time = 0;
+    case_data->can_be_overridden = 0;
+    
+    // Initialize conditional logic arrays
+    for(uint8_t i = 0; i < 8; i++) {
+        case_data->must_be_on[i] = 0;
+        case_data->must_be_off[i] = 0;
+    }
      
      // Validate address (FAST EXIT)
      if(address == 0xFFFF || address >= 0x1000) {
@@ -301,10 +302,13 @@
          return 0;  // Invalid case, not an error
      }
      
-     // Read pattern timing byte (byte 7)
-     uint8_t pattern_byte = ReadEEPROMByte(address + CASE_OFFSET_PATTERN_TIMING);
-     
-     // Read conditional logic bytes
+    // Read configuration byte (byte 4)
+    uint8_t config_byte = ReadEEPROMByte(address + CASE_OFFSET_CONFIG);
+    
+    // Read pattern timing byte (byte 7)
+    uint8_t pattern_byte = ReadEEPROMByte(address + CASE_OFFSET_PATTERN_TIMING);
+    
+    // Read conditional logic bytes
      // Must Be On: bytes 8-15 (zero-indexed)
      for(uint8_t i = 0; i < 8; i++) {
          case_data->must_be_on[i] = ReadEEPROMByte(address + 8 + i);
@@ -325,12 +329,16 @@
      case_data->pgn = ((uint16_t)pgn_high << 8) | pgn_low;
      case_data->source_addr = source_addr;
      
-     // Extract pattern timing from byte 7
-     case_data->pattern_on_time = (pattern_byte >> 4) & 0x0F;  // Upper nibble = ON time
-     case_data->pattern_off_time = pattern_byte & 0x0F;         // Lower nibble = OFF time
-     
-     // Mark as valid
-     case_data->valid = 1;
+    // Extract pattern timing from byte 7
+    case_data->pattern_on_time = (pattern_byte >> 4) & 0x0F;  // Upper nibble = ON time
+    case_data->pattern_off_time = pattern_byte & 0x0F;         // Lower nibble = OFF time
+    
+    // Extract can_be_overridden from byte 4 (bits 2-3)
+    // Single filament brake lights use this to allow turn signals to override
+    case_data->can_be_overridden = ((config_byte & CONFIG_CAN_BE_OVERRIDDEN_MASK) == CONFIG_CAN_BE_OVERRIDDEN_VALUE) ? 1 : 0;
+    
+    // Mark as valid
+    case_data->valid = 1;
      
      return 1;  // Success
  }
@@ -643,113 +651,213 @@
      }
  }
  
- uint8_t EEPROM_GetAggregatedMessages(AggregatedMessage *messages, uint8_t max_messages) {
-     uint8_t msg_count = 0;
-     
-     // Validate parameters
-     if(messages == 0 || max_messages == 0) {
-         return 0;
-     }
-     
-     // Initialize message array
-     for(uint8_t i = 0; i < max_messages; i++) {
-         messages[i].valid = 0;
-         messages[i].priority = 0;
-         messages[i].pgn = 0;
-         messages[i].source_addr = 0;
-         memset(messages[i].data, 0, 8);
-         messages[i].has_pattern = 0;      // PHASE 1: Initialize pattern flag
-         messages[i].data_changed = 0;     // PHASE 1: Initialize change flag
-     }
-     
-     // Process each active case
-     for(uint8_t i = 0; i < active_case_count; i++) {
-         // Safety check
-         if(i >= MAX_ACTIVE_CASES) {
-             break;
-         }
-         
-         ActiveCase *ac = &active_cases[i];
-         
-         // Skip invalid cases
-         if(!ac->case_data.valid) {
-             continue;
-         }
-         
-         // PATTERN TIMING: All cases for an input share the pattern timer
-         // If the input has ANY pattern timer active (set in Case 1), ALL cases follow it
-         // This allows multiple cases (different PGNs) to flash together in sync
-         // Skip pattern check for special cases (input_num = 0xFF for track ignition clearing)
-         uint8_t in_off_phase = 0;
-         if(ac->input_num < TOTAL_INPUTS && pattern_timers[ac->input_num].has_pattern) {
-             // This input has a pattern timer active - check the phase
-             if(!EEPROM_Pattern_IsInOnPhase(ac->input_num)) {
-                 in_off_phase = 1;  // Mark that we're in OFF phase - will send zeros
-             }
-         }
-         // If no pattern timer is active for this input, always transmit (solid)
-         
-         // CONDITIONAL LOGIC: Check ignition requirement
-         // Byte 13 (zero-indexed) = byte 14 (1-indexed) contains "Must Be On" flags
-         // Bit 5 of byte 13 = ignition requirement bit
-         // If bit is set (1), ignition must be ON to transmit this case
-         uint8_t ignition_required = (ac->case_data.must_be_on[5] & 0x20) ? 1 : 0;
-         
-         if(ignition_required) {
-             // This case requires ignition to be ON
-             if(!Inputs_GetIgnitionState()) {
-                 continue;  // Skip this case - ignition is OFF but required
-             }
-         }
-         
-         // Look for existing message with same PGN/SA
-         uint8_t found = 0;
-         for(uint8_t j = 0; j < msg_count; j++) {
-             if(messages[j].pgn == ac->case_data.pgn && 
-                messages[j].source_addr == ac->case_data.source_addr) {
-                 // OR the data bytes together
-                 // If in OFF phase, OR with zeros (no effect on existing data)
-                 if(!in_off_phase) {
-                     for(uint8_t k = 0; k < 8; k++) {
-                         messages[j].data[k] |= ac->case_data.data[k];
-                     }
-                 }
-                 // PHASE 1: Set has_pattern flag if this case's input has a pattern
-                 if(ac->input_num < TOTAL_INPUTS && pattern_timers[ac->input_num].has_pattern) {
-                     messages[j].has_pattern = 1;
-                 }
-                 found = 1;
-                 break;
-             }
-         }
-         
-         // If not found and we have room, add new message
-         if(!found && msg_count < max_messages) {
-             messages[msg_count].priority = ac->case_data.priority;
-             messages[msg_count].pgn = ac->case_data.pgn;
-             messages[msg_count].source_addr = ac->case_data.source_addr;
-             // If in OFF phase, use zeros; otherwise use case data
-             for(uint8_t k = 0; k < 8; k++) {
-                 messages[msg_count].data[k] = in_off_phase ? 0x00 : ac->case_data.data[k];
-             }
-             messages[msg_count].valid = 1;
-             // PHASE 1: Set has_pattern flag if this case's input has a pattern
-             if(ac->input_num < TOTAL_INPUTS && pattern_timers[ac->input_num].has_pattern) {
-                 messages[msg_count].has_pattern = 1;
-             }
-             msg_count++;
-         }
-     }
-     
-     // STEP 2: Aggregate inLINK messages
-     uint8_t inlink_count = InLink_GetMessageCount();
-     
-     for(uint8_t i = 0; i < inlink_count; i++) {
-         InLinkMessage* inlink_msg = InLink_GetMessage(i);
-         
-         if(inlink_msg == NULL || !inlink_msg->valid) {
-             continue;
-         }
+uint8_t EEPROM_GetAggregatedMessages(AggregatedMessage *messages, uint8_t max_messages) {
+    uint8_t msg_count = 0;
+    
+    // Validate parameters
+    if(messages == 0 || max_messages == 0) {
+        return 0;
+    }
+    
+    // Initialize message array
+    for(uint8_t i = 0; i < max_messages; i++) {
+        messages[i].valid = 0;
+        messages[i].priority = 0;
+        messages[i].pgn = 0;
+        messages[i].source_addr = 0;
+        memset(messages[i].data, 0, 8);
+        messages[i].has_pattern = 0;      // PHASE 1: Initialize pattern flag
+        messages[i].data_changed = 0;     // PHASE 1: Initialize change flag
+    }
+    
+    // ========================================================================
+    // SINGLE FILAMENT BRAKE LIGHT OVERRIDE LOGIC
+    // ========================================================================
+    // For single filament brake lights, the brake and turn signals share the
+    // same output bits. When braking + turning, the turn signal pattern should
+    // override the brake on the turning side, while the other side stays steady.
+    //
+    // Implementation:
+    // PASS 1: Build a "pattern mask" for each PGN/SA - bits controlled by pattern cases
+    // PASS 2: Aggregate with override - overridable cases exclude pattern-controlled bits
+    // ========================================================================
+    
+    // Temporary structure to track pattern masks per PGN/SA
+    typedef struct {
+        uint16_t pgn;
+        uint8_t source_addr;
+        uint8_t pattern_mask[8];  // Bits controlled by any active pattern case
+        uint8_t valid;
+    } PatternMaskEntry;
+    
+    PatternMaskEntry pattern_masks[MAX_UNIQUE_MESSAGES];
+    uint8_t pattern_mask_count = 0;
+    
+    // Initialize pattern mask array
+    for(uint8_t i = 0; i < MAX_UNIQUE_MESSAGES; i++) {
+        pattern_masks[i].valid = 0;
+        pattern_masks[i].pgn = 0;
+        pattern_masks[i].source_addr = 0;
+        memset(pattern_masks[i].pattern_mask, 0, 8);
+    }
+    
+    // PASS 1: Identify all bits controlled by pattern cases (turn signals, hazards)
+    // These are the bits that can override "overridable" cases (brakes)
+    for(uint8_t i = 0; i < active_case_count; i++) {
+        if(i >= MAX_ACTIVE_CASES) break;
+        
+        ActiveCase *ac = &active_cases[i];
+        
+        if(!ac->case_data.valid) continue;
+        
+        // Only process cases that have pattern timing (turn signals, hazards)
+        if(ac->input_num >= TOTAL_INPUTS) continue;
+        if(!pattern_timers[ac->input_num].has_pattern) continue;
+        
+        // Find or create pattern mask entry for this PGN/SA
+        uint8_t found = 0;
+        for(uint8_t j = 0; j < pattern_mask_count; j++) {
+            if(pattern_masks[j].pgn == ac->case_data.pgn && 
+               pattern_masks[j].source_addr == ac->case_data.source_addr) {
+                // OR in this case's data bits to the pattern mask
+                for(uint8_t k = 0; k < 8; k++) {
+                    pattern_masks[j].pattern_mask[k] |= ac->case_data.data[k];
+                }
+                found = 1;
+                break;
+            }
+        }
+        
+        // Create new entry if not found
+        if(!found && pattern_mask_count < MAX_UNIQUE_MESSAGES) {
+            pattern_masks[pattern_mask_count].pgn = ac->case_data.pgn;
+            pattern_masks[pattern_mask_count].source_addr = ac->case_data.source_addr;
+            for(uint8_t k = 0; k < 8; k++) {
+                pattern_masks[pattern_mask_count].pattern_mask[k] = ac->case_data.data[k];
+            }
+            pattern_masks[pattern_mask_count].valid = 1;
+            pattern_mask_count++;
+        }
+    }
+    
+    // PASS 2: Aggregate all cases with override logic
+    for(uint8_t i = 0; i < active_case_count; i++) {
+        // Safety check
+        if(i >= MAX_ACTIVE_CASES) {
+            break;
+        }
+        
+        ActiveCase *ac = &active_cases[i];
+        
+        // Skip invalid cases
+        if(!ac->case_data.valid) {
+            continue;
+        }
+        
+        // PATTERN TIMING: All cases for an input share the pattern timer
+        // If the input has ANY pattern timer active (set in Case 1), ALL cases follow it
+        // This allows multiple cases (different PGNs) to flash together in sync
+        // Skip pattern check for special cases (input_num = 0xFF for track ignition clearing)
+        uint8_t in_off_phase = 0;
+        uint8_t has_pattern = 0;
+        if(ac->input_num < TOTAL_INPUTS && pattern_timers[ac->input_num].has_pattern) {
+            has_pattern = 1;
+            // This input has a pattern timer active - check the phase
+            if(!EEPROM_Pattern_IsInOnPhase(ac->input_num)) {
+                in_off_phase = 1;  // Mark that we're in OFF phase - will send zeros
+            }
+        }
+        // If no pattern timer is active for this input, always transmit (solid)
+        
+        // CONDITIONAL LOGIC: Check ignition requirement
+        // Byte 13 (zero-indexed) = byte 14 (1-indexed) contains "Must Be On" flags
+        // Bit 5 of byte 13 = ignition requirement bit
+        // If bit is set (1), ignition must be ON to transmit this case
+        uint8_t ignition_required = (ac->case_data.must_be_on[5] & 0x20) ? 1 : 0;
+        
+        if(ignition_required) {
+            // This case requires ignition to be ON
+            if(!Inputs_GetIgnitionState()) {
+                continue;  // Skip this case - ignition is OFF but required
+            }
+        }
+        
+        // SINGLE FILAMENT OVERRIDE: Get the pattern mask for this PGN/SA
+        uint8_t override_mask[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+        if(ac->case_data.can_be_overridden) {
+            // This is an overridable case (brake) - find the pattern mask
+            for(uint8_t j = 0; j < pattern_mask_count; j++) {
+                if(pattern_masks[j].pgn == ac->case_data.pgn && 
+                   pattern_masks[j].source_addr == ac->case_data.source_addr) {
+                    // Copy the pattern mask - these bits will be excluded from brake
+                    for(uint8_t k = 0; k < 8; k++) {
+                        override_mask[k] = pattern_masks[j].pattern_mask[k];
+                    }
+                    break;
+                }
+            }
+        }
+        
+        // Calculate the effective data for this case
+        uint8_t effective_data[8];
+        for(uint8_t k = 0; k < 8; k++) {
+            if(in_off_phase) {
+                // Pattern case in OFF phase - contribute zeros
+                effective_data[k] = 0x00;
+            } else if(ac->case_data.can_be_overridden) {
+                // Overridable case - exclude bits controlled by pattern cases
+                effective_data[k] = ac->case_data.data[k] & ~override_mask[k];
+            } else {
+                // Normal case - use data as-is
+                effective_data[k] = ac->case_data.data[k];
+            }
+        }
+        
+        // Look for existing message with same PGN/SA
+        uint8_t found = 0;
+        for(uint8_t j = 0; j < msg_count; j++) {
+            if(messages[j].pgn == ac->case_data.pgn && 
+               messages[j].source_addr == ac->case_data.source_addr) {
+                // OR the effective data bytes together
+                for(uint8_t k = 0; k < 8; k++) {
+                    messages[j].data[k] |= effective_data[k];
+                }
+                // PHASE 1: Set has_pattern flag if this case's input has a pattern
+                if(has_pattern) {
+                    messages[j].has_pattern = 1;
+                }
+                found = 1;
+                break;
+            }
+        }
+        
+        // If not found and we have room, add new message
+        if(!found && msg_count < max_messages) {
+            messages[msg_count].priority = ac->case_data.priority;
+            messages[msg_count].pgn = ac->case_data.pgn;
+            messages[msg_count].source_addr = ac->case_data.source_addr;
+            for(uint8_t k = 0; k < 8; k++) {
+                messages[msg_count].data[k] = effective_data[k];
+            }
+            messages[msg_count].valid = 1;
+            // PHASE 1: Set has_pattern flag if this case's input has a pattern
+            if(has_pattern) {
+                messages[msg_count].has_pattern = 1;
+            }
+            msg_count++;
+        }
+    }
+    
+   // STEP 2: Aggregate inLINK messages
+    // FIX: Iterate over all possible indices, not just count
+    // InLink_GetMessageCount returns the number of valid messages, but they
+    // may not be stored at contiguous indices starting from 0
+    for(uint8_t i = 0; i < MAX_INLINK_MESSAGES; i++) {
+        InLinkMessage* inlink_msg = InLink_GetMessage(i);
+        
+        if(inlink_msg == NULL || !inlink_msg->valid) {
+            continue;
+        }
          
          // Look for existing message with same PGN/SA
          uint8_t found = 0;

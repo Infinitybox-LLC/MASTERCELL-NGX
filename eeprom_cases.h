@@ -32,6 +32,8 @@
 #define CASE_DATA_SIZE              8
 
 // Byte 4 bit masks (configuration byte)
+#define CONFIG_CAN_BE_OVERRIDDEN_MASK   0x0C  // Bits 2-3: Can be overridden by pattern cases
+#define CONFIG_CAN_BE_OVERRIDDEN_VALUE  0x04  // Bits 2-3 = 01 for can be overridden
 #define CONFIG_ONE_BUTTON_MASK      0x30  // Bits 4-5: One-button start mode
 #define CONFIG_ONE_BUTTON_VALUE     0x10  // Bits 4-5 = 01 for one-button start
 #define CONFIG_TRACK_IGNITION_MASK  0xC0  // Bits 6-7: Track ignition mode
@@ -64,6 +66,7 @@ typedef struct {
     uint8_t must_be_on[8];     // Bytes 8-15 (zero-indexed): Conditional logic - inputs that must be ON
     uint8_t must_be_off[8];    // Bytes 16-23 (zero-indexed): Conditional logic - inputs that must be OFF
     uint8_t valid;          // 1 = valid case, 0 = invalid (all 0xFF)
+    uint8_t can_be_overridden; // 1 = can be overridden by flashing pattern cases (single filament brake)
 } CaseData;
 
 // Structure to track an active input case
@@ -101,8 +104,8 @@ typedef struct {
 } AggregatedMessage;
 
 // Maximum unique PGN/SA combinations
-// Our test data uses only 1 unique PGN/SA combo (0xFF01/0x1E)
-#define MAX_UNIQUE_MESSAGES 10
+// Increased to handle more EEPROM cases + inLINK messages
+#define MAX_UNIQUE_MESSAGES 24
 
 // Function prototypes
 
