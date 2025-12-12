@@ -650,6 +650,67 @@
          }
      }
  }
+
+// ============================================================================
+// CONDITIONAL LOGIC - MUST BE ON / MUST BE OFF INPUT CHECKING
+// ============================================================================
+
+/**
+ * Check if all must_be_on and must_be_off conditions are met for a case
+ * 
+ * Bit layout for must_be_on/must_be_off (8 bytes each):
+ *   Bytes 0-5: Inputs 1-44 (bits 0-43)
+ *     - Byte 0: Inputs 1-8 (bit 0 = input 1, bit 7 = input 8)
+ *     - Byte 1: Inputs 9-16
+ *     - Byte 2: Inputs 17-24
+ *     - Byte 3: Inputs 25-32
+ *     - Byte 4: Inputs 33-40
+ *     - Byte 5 bits 0-3: Inputs 41-44
+ *   Byte 5 bit 4: Security condition (0x10)
+ *   Byte 5 bit 5: Ignition condition (0x20)
+ *   Bytes 6-7: Frequency/Analog thresholds (future - not implemented)
+ * 
+ * @param must_be_on 8-byte array of conditions that must be ON/true
+ * @param must_be_off 8-byte array of conditions that must be OFF/false
+ * @return 1 if all conditions are met, 0 if any condition fails
+ */
+static uint8_t CheckInputConditions(uint8_t *must_be_on, uint8_t *must_be_off) {
+    // Check inputs 1-44 (bits 0-43 across bytes 0-5)
+    // Input numbers are 0-indexed internally (input 0 = physical input 1)
+    for(uint8_t input = 0; input < TOTAL_INPUTS; input++) {
+        uint8_t byte_idx = input / 8;
+        uint8_t bit_mask = 1 << (input % 8);
+        
+        // Get current state of this input (1 = ON/active, 0 = OFF/inactive)
+        uint8_t input_state = Inputs_GetState(input);
+        
+        // Check must_be_on: if bit is set, input must be ON
+        if((must_be_on[byte_idx] & bit_mask) && !input_state) {
+            return 0;  // Condition failed - input should be ON but is OFF
+        }
+        
+        // Check must_be_off: if bit is set, input must be OFF
+        if((must_be_off[byte_idx] & bit_mask) && input_state) {
+            return 0;  // Condition failed - input should be OFF but is ON
+        }
+    }
+    
+    // Check ignition condition (byte 5, bit 5 = 0x20)
+    if((must_be_on[5] & 0x20) && !Inputs_GetIgnitionState()) {
+        return 0;  // Must be on requires ignition, but ignition is OFF
+    }
+    if((must_be_off[5] & 0x20) && Inputs_GetIgnitionState()) {
+        return 0;  // Must be off requires no ignition, but ignition is ON
+    }
+    
+    // TODO: Check security condition (byte 5, bit 4 = 0x10)
+    // Security state needs to be implemented
+    
+    // TODO: Check frequency/analog thresholds (bytes 6-7)
+    // These are for future expansion
+    
+    return 1;  // All conditions met
+}
  
 uint8_t EEPROM_GetAggregatedMessages(AggregatedMessage *messages, uint8_t max_messages) {
     uint8_t msg_count = 0;
@@ -769,17 +830,10 @@ uint8_t EEPROM_GetAggregatedMessages(AggregatedMessage *messages, uint8_t max_me
         }
         // If no pattern timer is active for this input, always transmit (solid)
         
-        // CONDITIONAL LOGIC: Check ignition requirement
-        // Byte 13 (zero-indexed) = byte 14 (1-indexed) contains "Must Be On" flags
-        // Bit 5 of byte 13 = ignition requirement bit
-        // If bit is set (1), ignition must be ON to transmit this case
-        uint8_t ignition_required = (ac->case_data.must_be_on[5] & 0x20) ? 1 : 0;
-        
-        if(ignition_required) {
-            // This case requires ignition to be ON
-            if(!Inputs_GetIgnitionState()) {
-                continue;  // Skip this case - ignition is OFF but required
-            }
+        // CONDITIONAL LOGIC: Check all must_be_on and must_be_off conditions
+        // This includes input states (1-44), ignition, security, etc.
+        if(!CheckInputConditions(ac->case_data.must_be_on, ac->case_data.must_be_off)) {
+            continue;  // Skip this case - conditions not met
         }
         
         // SINGLE FILAMENT OVERRIDE: Get the pattern mask for this PGN/SA

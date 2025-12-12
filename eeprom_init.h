@@ -93,6 +93,9 @@ void EEPROM_WriteCase(uint16_t address, uint8_t priority, uint16_t pgn,
                      uint8_t source_addr, uint8_t config_byte, 
                      uint8_t pattern_timing, uint8_t requires_ignition, 
                      uint8_t *data);
+void EEPROM_WriteCaseEx(uint16_t address, uint8_t priority, uint16_t pgn, 
+                        uint8_t source_addr, uint8_t config_byte, uint8_t pattern_timing,
+                        uint8_t *must_be_on, uint8_t *must_be_off, uint8_t *data);
 void EEPROM_WriteInvalidCase(uint16_t address);
 void ParseCANID(const char *can_id_str, uint8_t *priority, uint16_t *pgn, uint8_t *sa);
 

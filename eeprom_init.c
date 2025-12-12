@@ -144,11 +144,21 @@ void EEPROM_WriteBytePair(uint16_t address, uint8_t byte0, uint8_t byte1) {
 }
 
 /*
- * Write a complete 32-byte case to EEPROM
+ * Write a complete 32-byte case to EEPROM with full conditional support
+ * 
+ * @param address EEPROM address to write to
+ * @param priority J1939 priority (0-7)
+ * @param pgn Parameter Group Number
+ * @param source_addr Source Address
+ * @param config_byte Configuration flags (byte 4)
+ * @param pattern_timing Pattern ON/OFF timing (byte 7)
+ * @param must_be_on 8-byte array of must_be_on conditions (NULL = no conditions)
+ * @param must_be_off 8-byte array of must_be_off conditions (NULL = no conditions)
+ * @param data 8-byte CAN data payload
  */
-void EEPROM_WriteCase(uint16_t address, uint8_t priority, uint16_t pgn, 
-                             uint8_t source_addr, uint8_t config_byte, uint8_t pattern_timing,
-                             uint8_t requires_ignition, uint8_t *data) {
+void EEPROM_WriteCaseEx(uint16_t address, uint8_t priority, uint16_t pgn, 
+                        uint8_t source_addr, uint8_t config_byte, uint8_t pattern_timing,
+                        uint8_t *must_be_on, uint8_t *must_be_off, uint8_t *data) {
     // Validate address
     if(address & 0x01) {
         write_errors++;
@@ -181,12 +191,18 @@ void EEPROM_WriteCase(uint16_t address, uint8_t priority, uint16_t pgn,
     case_buffer[7] = pattern_timing;
     
     // Bytes 8-15: Must Be On (conditional logic)
-    // Byte 13 bit 5 (0x20) = Requires Ignition
-    if(requires_ignition) {
-        case_buffer[13] = 0x20;
+    if(must_be_on != NULL) {
+        for(uint8_t i = 0; i < 8; i++) {
+            case_buffer[8 + i] = must_be_on[i];
+        }
     }
     
-    // Bytes 16-23: Must Be Off (all zeros for now)
+    // Bytes 16-23: Must Be Off (conditional logic)
+    if(must_be_off != NULL) {
+        for(uint8_t i = 0; i < 8; i++) {
+            case_buffer[16 + i] = must_be_off[i];
+        }
+    }
     
     // Bytes 24-31: CAN Data payload
     for(uint8_t i = 0; i < 8; i++) {
@@ -203,6 +219,25 @@ void EEPROM_WriteCase(uint16_t address, uint8_t priority, uint16_t pgn,
         uint16_t word = case_buffer[i] | ((uint16_t)case_buffer[i+1] << 8);
         EEPROM_WriteWord(address + i, word);
     }
+}
+
+/*
+ * Write a complete 32-byte case to EEPROM (legacy function for backward compatibility)
+ */
+void EEPROM_WriteCase(uint16_t address, uint8_t priority, uint16_t pgn, 
+                             uint8_t source_addr, uint8_t config_byte, uint8_t pattern_timing,
+                             uint8_t requires_ignition, uint8_t *data) {
+    // Build must_be_on array with just ignition requirement if needed
+    uint8_t must_be_on[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    
+    // Byte 5 bit 5 (0x20) = Requires Ignition
+    if(requires_ignition) {
+        must_be_on[5] = 0x20;
+    }
+    
+    // Call the extended function
+    EEPROM_WriteCaseEx(address, priority, pgn, source_addr, config_byte, pattern_timing,
+                       requires_ignition ? must_be_on : NULL, NULL, data);
 }
 
 void EEPROM_WriteInvalidCase(uint16_t address) {
