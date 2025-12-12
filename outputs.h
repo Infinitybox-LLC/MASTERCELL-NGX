@@ -39,37 +39,37 @@
 // PIN DEFINITIONS - MOSFET GATE DRIVERS
 // ============================================================================
 
-// Output 1 - RB15
-#define OUTPUT1_TRIS            TRISBbits.TRISB15
-#define OUTPUT1_LAT             LATBbits.LATB15
+// Output 1 - RG2 (Gate 01)
+#define OUTPUT1_TRIS            TRISGbits.TRISG2
+#define OUTPUT1_LAT             LATGbits.LATG2
 
-// Output 2 - RF2
-#define OUTPUT2_TRIS            TRISFbits.TRISF2
-#define OUTPUT2_LAT             LATFbits.LATF2
+// Output 2 - RG3 (Gate 02)
+#define OUTPUT2_TRIS            TRISGbits.TRISG3
+#define OUTPUT2_LAT             LATGbits.LATG3
 
-// Output 3 - RF3
-#define OUTPUT3_TRIS            TRISFbits.TRISF3
-#define OUTPUT3_LAT             LATFbits.LATF3
+// Output 3 - RF6 (Gate 03)
+#define OUTPUT3_TRIS            TRISFbits.TRISF6
+#define OUTPUT3_LAT             LATFbits.LATF6
 
-// Output 4 - RF4
-#define OUTPUT4_TRIS            TRISFbits.TRISF4
-#define OUTPUT4_LAT             LATFbits.LATF4
+// Output 4 - RF2 (Gate 04)
+#define OUTPUT4_TRIS            TRISFbits.TRISF2
+#define OUTPUT4_LAT             LATFbits.LATF2
 
-// Output 5 - RF5
-#define OUTPUT5_TRIS            TRISFbits.TRISF5
-#define OUTPUT5_LAT             LATFbits.LATF5
+// Output 5 - RF3 (Gate 05)
+#define OUTPUT5_TRIS            TRISFbits.TRISF3
+#define OUTPUT5_LAT             LATFbits.LATF3
 
-// Output 6 - RF6
-#define OUTPUT6_TRIS            TRISFbits.TRISF6
-#define OUTPUT6_LAT             LATFbits.LATF6
+// Output 6 - RF5 (Gate 06)
+#define OUTPUT6_TRIS            TRISFbits.TRISF5
+#define OUTPUT6_LAT             LATFbits.LATF5
 
-// Output 7 - RG2
-#define OUTPUT7_TRIS            TRISGbits.TRISG2
-#define OUTPUT7_LAT             LATGbits.LATG2
+// Output 7 - RF4 (Gate 07)
+#define OUTPUT7_TRIS            TRISFbits.TRISF4
+#define OUTPUT7_LAT             LATFbits.LATF4
 
-// Output 8 - RG3
-#define OUTPUT8_TRIS            TRISGbits.TRISG3
-#define OUTPUT8_LAT             LATGbits.LATG3
+// Output 8 - RB15 (Gate 08)
+#define OUTPUT8_TRIS            TRISBbits.TRISB15
+#define OUTPUT8_LAT             LATBbits.LATB15
 
 // ============================================================================
 // FUNCTION PROTOTYPES
