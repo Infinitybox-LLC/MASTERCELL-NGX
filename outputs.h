@@ -29,6 +29,7 @@
 // Output control CAN message (from inLINK, broadcast 1Hz)
 // Shares PGN with climate control - byte 3 contains output states
 #define OUTPUTS_PGN             0xAF00
+#define OUTPUTS_LOCAL_PGN       0xFF00  // From EEPROM cases (internal/local outputs)
 #define OUTPUTS_SOURCE_ADDR     0x01    // Update to match inLINK source address
 
 // Data byte position for output states
@@ -121,6 +122,42 @@ uint8_t Outputs_Get(uint8_t output);
  * Turn all outputs OFF
  */
 void Outputs_AllOff(void);
+
+// ============================================================================
+// HARDCODED INPUT-TO-OUTPUT FUNCTIONS
+// ============================================================================
+
+/**
+ * Update hardcoded outputs (OUT1-OUT6) based on input states
+ * Call this from the main loop when inputs are scanned
+ * 
+ * Mappings:
+ *   OUT1 ← IN03 (Left Turn) - uses pattern timing
+ *   OUT2 ← IN04 (Right Turn) - uses pattern timing
+ *   OUT3 ← IN07 (High Beams) - steady
+ *   OUT4 ← IN06 (Parking Lights) - steady
+ *   OUT5 ← IN01 (Ignition) - steady
+ *   OUT6 ← Security (software controlled)
+ */
+void Outputs_UpdateFromInputs(void);
+
+/**
+ * Process pattern timing for turn signal outputs (OUT1/OUT2)
+ * Call this every 250ms from the pattern timer
+ */
+void Outputs_PatternTick(void);
+
+/**
+ * Set the security output state (OUT6)
+ * @param state 0 = OFF, 1 = ON
+ */
+void Outputs_SetSecurity(uint8_t state);
+
+/**
+ * Get the security output state
+ * @return 0 = OFF, 1 = ON
+ */
+uint8_t Outputs_GetSecurity(void);
 
 #endif // OUTPUTS_H
 

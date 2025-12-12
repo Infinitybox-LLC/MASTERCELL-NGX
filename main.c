@@ -440,6 +440,9 @@ uint8_t ProcessPendingCANMessages(void);  // Drain CAN FIFO, returns 1 if inLINK
             pattern_changed = 0;
             IEC0bits.T1IE = 1;
             
+            // Update turn signal pattern outputs (OUT1/OUT2)
+            Outputs_PatternTick();
+            
             // PHASE 3: Pass PATTERN_TICK reason
             TransmitAggregatedMessages(BROADCAST_REASON_PATTERN_TICK);
             
@@ -479,6 +482,7 @@ uint8_t ProcessPendingCANMessages(void);  // Drain CAN FIFO, returns 1 if inLINK
          
          if(scan_timer == 0) {
              Inputs_Scan();
+             Outputs_UpdateFromInputs();  // Update hardcoded outputs (OUT3-OUT6) from inputs
              scan_timer = 10;
              
              if(Inputs_OneButtonStartStateChanged()) {
@@ -1182,23 +1186,32 @@ void TransmitAggregatedMessages(uint8_t reason) {
                  }
              }
              
-             if(should_transmit) {
-                 J1939_TransmitMessage(messages[i].priority, 
-                                      messages[i].pgn, 
-                                      messages[i].source_addr,
-                                      messages[i].data);
-                 
-                 // FIX: Store this message as it was actually transmitted
-                 if(transmitted_count < MAX_UNIQUE_MESSAGES) {
-                     transmitted_this_cycle[transmitted_count].pgn = messages[i].pgn;
-                     transmitted_this_cycle[transmitted_count].source_addr = messages[i].source_addr;
-                     for(uint8_t k = 0; k < 8; k++) {
-                         transmitted_this_cycle[transmitted_count].data[k] = messages[i].data[k];
-                     }
-                     transmitted_this_cycle[transmitted_count].valid = 1;
-                     transmitted_count++;
-                 }
-             }
+            if(should_transmit) {
+                // Check if this is a local output message (PGN 0xFF00)
+                if(messages[i].pgn == OUTPUTS_LOCAL_PGN) {
+                    // Apply to local outputs (OUT7/OUT8 only), don't transmit on CAN
+                    // OUT1-OUT6 are hardcoded to inputs, not controlled by EEPROM cases
+                    Outputs_Set(7, (messages[i].data[OUTPUTS_DATA_BYTE] & 0x40) ? 1 : 0);
+                    Outputs_Set(8, (messages[i].data[OUTPUTS_DATA_BYTE] & 0x80) ? 1 : 0);
+                } else {
+                    // Transmit on CAN bus
+                    J1939_TransmitMessage(messages[i].priority, 
+                                         messages[i].pgn, 
+                                         messages[i].source_addr,
+                                         messages[i].data);
+                }
+                
+                // FIX: Store this message as it was actually transmitted/applied
+                if(transmitted_count < MAX_UNIQUE_MESSAGES) {
+                    transmitted_this_cycle[transmitted_count].pgn = messages[i].pgn;
+                    transmitted_this_cycle[transmitted_count].source_addr = messages[i].source_addr;
+                    for(uint8_t k = 0; k < 8; k++) {
+                        transmitted_this_cycle[transmitted_count].data[k] = messages[i].data[k];
+                    }
+                    transmitted_this_cycle[transmitted_count].valid = 1;
+                    transmitted_count++;
+                }
+            }
          }
      }
      

@@ -121,9 +121,9 @@ void EEPROM_LoadFrontEngine(void) {
     EEPROM_WriteInvalidCase(addr);
     addr += 32;
 
-    // IN03 - 4 ON cases - Left Turn Signal (TEST: Requires IN16 Neutral Safety)
+    // IN03 - 4 ON cases - Left Turn Signal (ignition required, no neutral safety)
     {
-        uint8_t must_be_on[8] = {0x00, 0x80, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00};  // IN16 + ignition required
+        uint8_t must_be_on[8] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00};  // Ignition required only
         ParseCANID("18FF011E", &priority, &pgn, &source_addr);
         memset(data, 0x00, 8);
         data[0] = 0x80;
@@ -132,7 +132,7 @@ void EEPROM_LoadFrontEngine(void) {
     addr += 32;
     
     {
-        uint8_t must_be_on[8] = {0x00, 0x80, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00};  // IN16 + ignition required
+        uint8_t must_be_on[8] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00};  // Ignition required only
         ParseCANID("18FF021E", &priority, &pgn, &source_addr);
         memset(data, 0x00, 8);
         data[0] = 0x80;
@@ -220,6 +220,8 @@ void EEPROM_LoadFrontEngine(void) {
     EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
     addr += 32;
     
+    EEPROM_WriteInvalidCase(addr);
+    addr += 32;
     EEPROM_WriteInvalidCase(addr);
     addr += 32;
     EEPROM_WriteInvalidCase(addr);
