@@ -46,6 +46,10 @@ static uint8_t debounce_count[INPUT_COUNT];
 // Global ignition flag (RAM-based, resets on power cycle)
 static uint8_t ignition_flag = 0;
 
+// CAN-based ignition state from inLINK (PGN 0xAF00, byte 4, bit 0)
+// This is OR'd with physical ignition inputs
+static uint8_t can_ignition_state = 0;
+
 // One-button start state tracking (one per input that is configured as one-button start)
 typedef struct {
     uint8_t input_num;              // Which input this is tracking
@@ -463,8 +467,20 @@ const char* Inputs_GetName(uint8_t input_num) {
 }
 
 // Get the ignition flag state
+// Returns 1 if ignition is on from physical inputs OR CAN (inLINK)
 uint8_t Inputs_GetIgnitionState(void) {
-    return ignition_flag;
+    return ignition_flag || can_ignition_state;
+}
+
+// Set the CAN-based ignition state from inLINK (PGN 0xAF00, byte 4, bit 0)
+void Inputs_SetCANIgnition(uint8_t state) {
+    uint8_t old_state = can_ignition_state;
+    can_ignition_state = state ? 1 : 0;
+    
+    // If CAN ignition state changed, update ignition-tracked cases
+    if (old_state != can_ignition_state) {
+        EEPROM_UpdateIgnitionTrackedCases(Inputs_GetIgnitionState());
+    }
 }
 
 // Update the ignition flag based on all ignition inputs

@@ -11,8 +11,8 @@
 #include <stdint.h>
 
 // Debounce configuration
-// Scan interval is 10ms, so DEBOUNCE_SCANS × 10ms = debounce time
-// Default: 3 scans × 10ms = 30ms debounce
+// Scan interval is 10ms, so DEBOUNCE_SCANS ï¿½ 10ms = debounce time
+// Default: 3 scans ï¿½ 10ms = 30ms debounce
 // Adjust this value to tune debounce time:
 //   2 = 20ms, 3 = 30ms, 4 = 40ms, 5 = 50ms, etc.
 #define DEBOUNCE_SCANS  3
@@ -142,11 +142,19 @@ const char* Inputs_GetName(uint8_t input_num);
  * Get the global ignition flag state
  * The ignition flag is set when:
  * - Any regular ignition input (byte 4 bits 0-1 = 0x01) is ON, OR
- * - Any one-button start input has turned on the ignition
+ * - Any one-button start input has turned on the ignition, OR
+ * - inLINK sends ignition ON via CAN (PGN 0xAF00, byte 4, bit 0)
  * 
  * @return 1 if ignition is on, 0 if ignition is off
  */
 uint8_t Inputs_GetIgnitionState(void);
+
+/**
+ * Set the CAN-based ignition state from inLINK
+ * This is OR'd with physical ignition inputs
+ * @param state 1 = ignition on from CAN, 0 = ignition off from CAN
+ */
+void Inputs_SetCANIgnition(uint8_t state);
 
 /**
  * Update the ignition flag based on current input states and EEPROM configuration

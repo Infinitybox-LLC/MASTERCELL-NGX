@@ -18,6 +18,7 @@
  * 
  * CAN Message Format (PGN 0xAF00/0xFF00):
  *   Byte 3: bits 0-7 control outputs 1-8 (0-5 are OR'd with inputs)
+ *   Byte 4: bit 0 = inLINK ignition (treated same as physical ignition input)
  */
 
 #include "outputs.h"
@@ -111,6 +112,14 @@ uint8_t Outputs_ProcessMessage(uint32_t can_id, uint8_t *data) {
     // OUT7 and OUT8 are CAN-only, set them directly
     Outputs_Set(7, (output_states & 0x40) ? 1 : 0);
     Outputs_Set(8, (output_states & 0x80) ? 1 : 0);
+    
+    // Process byte 4 for inLINK ignition (only from external AF00, not local FF00)
+    // Byte 4, bit 0: Ignition ON from inLINK
+    // This is treated the same as physical ignition input for EEPROM cases
+    if (pgn == OUTPUTS_PGN) {
+        uint8_t can_ignition = (data[4] & 0x01) ? 1 : 0;
+        Inputs_SetCANIgnition(can_ignition);
+    }
     
     return 1;  // Message processed
 }
