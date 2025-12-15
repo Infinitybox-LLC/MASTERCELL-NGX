@@ -36,13 +36,14 @@
  #define LED_PIN LATGbits.LATG0
  #define LED_TRIS TRISGbits.TRISG0
  
- // Screen states
- #define SCREEN_MAIN         0
- #define SCREEN_MENU         1
- #define SCREEN_SWITCH       2
- #define SCREEN_INVENTORY    3
- #define SCREEN_SYSTEM_INFO  4
- #define SCREEN_DEBUG        5
+// Screen states
+#define SCREEN_MAIN         0
+#define SCREEN_MENU         1
+#define SCREEN_SWITCH       2
+#define SCREEN_INVENTORY    3
+#define SCREEN_SYSTEM_INFO  4
+#define SCREEN_DEBUG        5
+#define SCREEN_CELL_DETAIL  6
  
  // Menu items
  #define MENU_SWITCH_STATES  0
@@ -80,12 +81,17 @@
  PreviousMessage prev_messages[MAX_UNIQUE_MESSAGES];
  uint8_t prev_msg_count = 0;
  
- uint8_t current_screen = SCREEN_MAIN;
- uint8_t menu_selection = 0;
- uint8_t menu_scroll_position = 0;
- uint8_t last_button = BTN_ID_NONE;
- uint8_t inventory_scroll_position = 0;
- volatile uint32_t system_time_ms = 0;
+uint8_t current_screen = SCREEN_MAIN;
+uint8_t menu_selection = 0;
+uint8_t menu_scroll_position = 0;
+uint8_t last_button = BTN_ID_NONE;
+uint8_t inventory_scroll_position = 0;
+uint8_t inventory_selection = 0;          // Currently highlighted item in inventory
+uint16_t selected_cell_pgn = 0;           // PGN of selected cell for detail view
+uint8_t selected_cell_type = 0;           // 0=PowerCell, 1=InMotion
+uint8_t detail_current_scroll = 0;        // Scroll position for current display in detail
+volatile uint32_t system_time_ms = 0;
+volatile uint16_t detail_refresh_timer = 0;  // 2-second refresh timer for detail screen
  
 // PHASE 3: Broadcast reason codes
 #define BROADCAST_REASON_PATTERN_TICK   0
@@ -94,10 +100,11 @@
 void Timer1_Init(void);
 void TransmitAggregatedMessages(uint8_t reason);  // PHASE 3: Added reason parameter
 uint8_t ProcessPendingCANMessages(void);  // Drain CAN FIFO, returns 1 if inLINK detected
- void DisplayMainScreen(void);
- void DisplayMenuScreen(void);
- void DisplaySwitchScreen(void);
- void DisplayInventoryScreen(void);
+void DisplayMainScreen(void);
+void DisplayMenuScreen(void);
+void DisplaySwitchScreen(void);
+void DisplayInventoryScreen(void);
+void DisplayCellDetailScreen(void);
  void DisplaySystemInfoScreen(void);
  void DisplayDebugScreen(void);
  void HandleButtonPress(uint8_t button);
@@ -362,7 +369,7 @@ uint8_t ProcessPendingCANMessages(void);  // Drain CAN FIFO, returns 1 if inLINK
             
             uint8_t rx_sa = can_msg.id & 0xFF;
             uint16_t rx_pgn = (can_msg.id >> 8) & 0xFFFF;
-            Network_UpdateDevice(rx_sa, rx_pgn, system_time_ms);
+            Network_UpdateDevice(rx_sa, rx_pgn, system_time_ms, can_msg.data);
             
            if (CAN_Config_ProcessMessage((CAN_Message*)&can_msg)) {
                IEC0bits.T1IE = 0;
@@ -541,6 +548,9 @@ uint8_t ProcessPendingCANMessages(void);  // Drain CAN FIFO, returns 1 if inLINK
                 case SCREEN_DEBUG:
                     DisplayDebugScreen();
                     break;
+                case SCREEN_CELL_DETAIL:
+                    // Cell detail screen uses its own 2-second refresh timer
+                    break;
             }
             
             // Quick poll after display update to prevent RX overflow
@@ -549,6 +559,12 @@ uint8_t ProcessPendingCANMessages(void);  // Drain CAN FIFO, returns 1 if inLINK
                 state_changed = 1;
                 IEC0bits.T1IE = 1;
             }
+        }
+        
+        // Cell detail screen has its own 2-second refresh timer
+        if(current_screen == SCREEN_CELL_DETAIL && detail_refresh_timer == 0) {
+            detail_refresh_timer = 2000;  // Reset to 2 seconds
+            DisplayCellDetailScreen();
         }
     }
     
@@ -657,31 +673,77 @@ void InitUnusedPins(void) {
              }
              break;
              
-         case SCREEN_SWITCH:
-         case SCREEN_INVENTORY:
-         case SCREEN_SYSTEM_INFO:
-             if(button == BTN_ID_HOME) {
-                 current_screen = SCREEN_MENU;
-                 inventory_scroll_position = 0;
-                 LCD_Clear();
-                 LCD_Backlight(1);
-                 backlight_timer = 5000;  // Start 5-second timer for menu
-                 DisplayMenuScreen();
-             } else if(current_screen == SCREEN_INVENTORY) {
-                 uint8_t device_count = Network_GetDeviceCount();
-                 if(button == BTN_ID_UP) {
-                     if(inventory_scroll_position > 0) {
-                         inventory_scroll_position--;
-                         DisplayInventoryScreen();
-                     }
-                 } else if(button == BTN_ID_DOWN) {
-                     if(device_count > 3 && inventory_scroll_position < device_count - 3) {
-                         inventory_scroll_position++;
-                         DisplayInventoryScreen();
-                     }
-                 }
-             }
-             break;
+        case SCREEN_SWITCH:
+        case SCREEN_SYSTEM_INFO:
+            if(button == BTN_ID_HOME) {
+                current_screen = SCREEN_MENU;
+                LCD_Clear();
+                LCD_Backlight(1);
+                backlight_timer = 5000;  // Start 5-second timer for menu
+                DisplayMenuScreen();
+            }
+            break;
+            
+        case SCREEN_INVENTORY:
+            if(button == BTN_ID_HOME) {
+                current_screen = SCREEN_MENU;
+                inventory_scroll_position = 0;
+                inventory_selection = 0;
+                LCD_Clear();
+                LCD_Backlight(1);
+                backlight_timer = 5000;  // Start 5-second timer for menu
+                DisplayMenuScreen();
+            } else if(button == BTN_ID_UP) {
+                if(inventory_selection > 0) {
+                    inventory_selection--;
+                    // Adjust scroll if selection goes above visible area
+                    if(inventory_selection < inventory_scroll_position) {
+                        inventory_scroll_position = inventory_selection;
+                    }
+                    DisplayInventoryScreen();
+                }
+            } else if(button == BTN_ID_DOWN) {
+                // Will be bounded by display_count in DisplayInventoryScreen
+                inventory_selection++;
+                // Adjust scroll if selection goes below visible area
+                if(inventory_selection >= inventory_scroll_position + 3) {
+                    inventory_scroll_position = inventory_selection - 2;
+                }
+                DisplayInventoryScreen();
+            } else if(button == BTN_ID_SELECT) {
+                // Enter cell detail view - but not for inLINK (type 2)
+                if(selected_cell_type != 2) {
+                    current_screen = SCREEN_CELL_DETAIL;
+                    detail_current_scroll = 0;
+                    detail_refresh_timer = 0;  // Trigger immediate display
+                    LCD_Clear();
+                    DisplayCellDetailScreen();
+                }
+                // inLINK has no detail screen - SELECT does nothing
+            }
+            break;
+            
+        case SCREEN_CELL_DETAIL:
+            if(button == BTN_ID_HOME) {
+                current_screen = SCREEN_INVENTORY;
+                detail_current_scroll = 0;
+                LCD_Clear();
+                DisplayInventoryScreen();
+            } else if(button == BTN_ID_UP) {
+                if(detail_current_scroll > 0) {
+                    detail_current_scroll--;
+                    LCD_Clear();
+                    DisplayCellDetailScreen();
+                }
+            } else if(button == BTN_ID_DOWN) {
+                // For PowerCell, scroll through 3 pages: 0=info, 1=I3-I8, 2=I9-I10
+                if(selected_cell_type == 0 && detail_current_scroll < 2) {
+                    detail_current_scroll++;
+                    LCD_Clear();
+                    DisplayCellDetailScreen();
+                }
+            }
+            break;
              
          case SCREEN_DEBUG:
              if(button == BTN_ID_HOME) {
@@ -818,138 +880,386 @@ void InitUnusedPins(void) {
      DisplayDevice display_list[16];
      uint8_t display_count = 0;
      
-     // Track which POWERCELLs we've found
-     uint8_t found_ff11 = 0, found_ff21 = 0;  // Front POWERCELL
-     uint8_t found_ff12 = 0, found_ff22 = 0;  // Rear POWERCELL
+    // Track which POWERCELLs, inLINK, and inControl we've found
+    uint8_t found_ff11 = 0, found_ff21 = 0;  // Front POWERCELL
+    uint8_t found_ff12 = 0, found_ff22 = 0;  // Rear POWERCELL
+    uint8_t found_af00 = 0;                   // inLINK NGX
+    uint8_t found_bf = 0;                     // inControl 1 (BFxx)
+    uint8_t found_cf = 0;                     // inControl 2 (CFxx)
+    
+    // First pass: identify all devices and check for POWERCELL pairs
+    for(uint8_t i = 0; i < device_count; i++) {
+        NetworkDevice* device = Network_GetDevice(i);
+        if(device != NULL && device->active) {
+            if(device->pgn == 0xFF11) found_ff11 = 1;
+            if(device->pgn == 0xFF21) found_ff21 = 1;
+            if(device->pgn == 0xFF12) found_ff12 = 1;
+            if(device->pgn == 0xFF22) found_ff22 = 1;
+            if(device->pgn == 0xAF00) found_af00 = 1;
+            if((device->pgn & 0xFF00) == 0xBF00) found_bf = 1;
+            if((device->pgn & 0xFF00) == 0xCF00) found_cf = 1;
+        }
+    }
+    
+    // Build display list in order: AF (inLINK), FF01/02 (PowerCells), FF03-06 (inMotion)
+    
+    // 1. Add inLINK NGX if found (no detail screen, just shows in list)
+    if(found_af00 && display_count < 16) {
+        display_list[display_count].display_pgn = 0xAF00;
+        sprintf(display_list[display_count].name, "inLINK NGX");
+        display_list[display_count].valid = 1;
+        display_count++;
+    }
+    
+    // 2. Add inControl devices if found (no detail screen)
+    if(found_bf && display_count < 16) {
+        display_list[display_count].display_pgn = 0xBF00;
+        sprintf(display_list[display_count].name, "inC 1");
+        display_list[display_count].valid = 1;
+        display_count++;
+    }
+    if(found_cf && display_count < 16) {
+        display_list[display_count].display_pgn = 0xCF00;
+        sprintf(display_list[display_count].name, "inC 2");
+        display_list[display_count].valid = 1;
+        display_count++;
+    }
+    
+    // 3. Add Front POWERCELL (FF01) if both FF11 and FF21 found
+    if(found_ff11 && found_ff21 && display_count < 16) {
+        display_list[display_count].display_pgn = 0xFF01;
+        sprintf(display_list[display_count].name, "FRONT PC");
+        display_list[display_count].valid = 1;
+        display_count++;
+    }
+    
+    // 3. Add Rear POWERCELL (FF02) if both FF12 and FF22 found
+    if(found_ff12 && found_ff22 && display_count < 16) {
+        display_list[display_count].display_pgn = 0xFF02;
+        sprintf(display_list[display_count].name, "REAR PC");
+        display_list[display_count].valid = 1;
+        display_count++;
+    }
+    
+    // 4. Add inMOTION devices (FF03-FF06) - scan for them
+    for(uint8_t i = 0; i < device_count && display_count < 16; i++) {
+        NetworkDevice* device = Network_GetDevice(i);
+        if(device == NULL || !device->active) continue;
+        
+        if(device->pgn == 0xFF33) {
+            display_list[display_count].display_pgn = 0xFF03;
+            sprintf(display_list[display_count].name, "DF inM NGX");
+            display_list[display_count].valid = 1;
+            display_count++;
+        }
+        else if(device->pgn == 0xFF34) {
+            display_list[display_count].display_pgn = 0xFF04;
+            sprintf(display_list[display_count].name, "PF inM NGX");
+            display_list[display_count].valid = 1;
+            display_count++;
+        }
+        else if(device->pgn == 0xFF35) {
+            display_list[display_count].display_pgn = 0xFF05;
+            sprintf(display_list[display_count].name, "DR inM NGX");
+            display_list[display_count].valid = 1;
+            display_count++;
+        }
+        else if(device->pgn == 0xFF36) {
+            display_list[display_count].display_pgn = 0xFF06;
+            sprintf(display_list[display_count].name, "PR inM NGX");
+            display_list[display_count].valid = 1;
+            display_count++;
+        }
+        // Skip all other devices (FF11, FF12, FF21, FF22 already handled above)
+    }
      
-     // First pass: identify all devices and check for POWERCELL pairs
-     for(uint8_t i = 0; i < device_count; i++) {
-         NetworkDevice* device = Network_GetDevice(i);
-         if(device != NULL && device->active) {
-             if(device->pgn == 0xFF11) found_ff11 = 1;
-             if(device->pgn == 0xFF21) found_ff21 = 1;
-             if(device->pgn == 0xFF12) found_ff12 = 1;
-             if(device->pgn == 0xFF22) found_ff22 = 1;
-         }
-     }
-     
-     // Second pass: build display list
-     for(uint8_t i = 0; i < device_count && display_count < 16; i++) {
-         NetworkDevice* device = Network_GetDevice(i);
-         if(device == NULL || !device->active) continue;
-         
-         // Filter out inLINK devices (PGNs starting with AF)
-         if((device->pgn & 0xFF00) == 0xAF00) {
-             continue;  // Skip inLINK devices
-         }
-         
-         // Check for inMOTION devices (FF33-FF36)
-         if(device->pgn == 0xFF33) {
-             display_list[display_count].display_pgn = 0xFF03;
-             sprintf(display_list[display_count].name, "DF inMOT");
-             display_list[display_count].valid = 1;
-             display_count++;
-         }
-         else if(device->pgn == 0xFF34) {
-             display_list[display_count].display_pgn = 0xFF04;
-             sprintf(display_list[display_count].name, "PF inMOT");
-             display_list[display_count].valid = 1;
-             display_count++;
-         }
-         else if(device->pgn == 0xFF35) {
-             display_list[display_count].display_pgn = 0xFF05;
-             sprintf(display_list[display_count].name, "DR inMOT");
-             display_list[display_count].valid = 1;
-             display_count++;
-         }
-         else if(device->pgn == 0xFF36) {
-             display_list[display_count].display_pgn = 0xFF06;
-             sprintf(display_list[display_count].name, "PR inMOT");
-             display_list[display_count].valid = 1;
-             display_count++;
-         }
-         // Check for Front POWERCELL (FF11 is first message, only add entry once)
-         else if(device->pgn == 0xFF11 && found_ff21) {
-             // Only add if we have both FF11 and FF21
-             // Check if we already added this POWERCELL
-             uint8_t already_added = 0;
-             for(uint8_t j = 0; j < display_count; j++) {
-                 if(display_list[j].display_pgn == 0xFF01) {
-                     already_added = 1;
-                     break;
-                 }
-             }
-             if(!already_added) {
-                 display_list[display_count].display_pgn = 0xFF01;
-                 sprintf(display_list[display_count].name, "FRONT PC");
-                 display_list[display_count].valid = 1;
-                 display_count++;
-             }
-         }
-         // Check for Rear POWERCELL (FF12 is first message, only add entry once)
-         else if(device->pgn == 0xFF12 && found_ff22) {
-             // Only add if we have both FF12 and FF22
-             // Check if we already added this POWERCELL
-             uint8_t already_added = 0;
-             for(uint8_t j = 0; j < display_count; j++) {
-                 if(display_list[j].display_pgn == 0xFF02) {
-                     already_added = 1;
-                     break;
-                 }
-             }
-             if(!already_added) {
-                 display_list[display_count].display_pgn = 0xFF02;
-                 sprintf(display_list[display_count].name, "REAR PC");
-                 display_list[display_count].valid = 1;
-                 display_count++;
-             }
-         }
-         // Skip FF21, FF22 as they're part of POWERCELL pairs
-         else if(device->pgn == 0xFF21 || device->pgn == 0xFF22) {
-             // Already handled by FF11/FF12 logic above
-             continue;
-         }
-         // For now, only show POWERCELLs and inMOTION devices
-         // All other devices are filtered out
-     }
-     
-     // Display the list
-     LCD_SetCursor(0, 0);
-     sprintf(display_buffer, "SYSTEM INV (%d) ", display_count);
-     LCD_Print(display_buffer);
-     
-     for(uint8_t line = 0; line < 3; line++) {
-         LCD_SetCursor(line + 1, 0);
-         
-         uint8_t device_index = inventory_scroll_position + line;
-         if(device_index < display_count && display_list[device_index].valid) {
-             if(line == 0) {
-                 sprintf(display_buffer, ">%04X %-10s", 
-                         display_list[device_index].display_pgn,
-                         display_list[device_index].name);
-             } else {
-                 sprintf(display_buffer, " %04X %-10s", 
-                         display_list[device_index].display_pgn,
-                         display_list[device_index].name);
-             }
-             LCD_Print(display_buffer);
-         } else {
-             LCD_Print("                ");
-         }
-     }
- }
- 
- void DisplaySystemInfoScreen(void) {
-     char display_buffer[17];
-     uint8_t fw_major, fw_minor;
-     uint8_t customer_name[4];
-     
-     // Keep backlight on for sub-menu screens
-     LCD_Backlight(1);
-     backlight_timer = 0;  // Disable timer so it stays on
-     
-     // Read firmware version from EEPROM
-     fw_major = EEPROM_Config_ReadByte(EEPROM_CFG_FW_MAJOR);
+    // Clamp inventory_selection to valid range
+    if(display_count == 0) {
+        inventory_selection = 0;
+    } else if(inventory_selection >= display_count) {
+        inventory_selection = display_count - 1;
+    }
+    
+    // Store selected cell info for detail screen
+    if(display_count > 0 && inventory_selection < display_count) {
+        selected_cell_pgn = display_list[inventory_selection].display_pgn;
+        // Determine cell type: 0=PowerCell, 1=InMotion, 2=no detail (inLINK, inControl)
+        if(selected_cell_pgn == 0xFF01 || selected_cell_pgn == 0xFF02) {
+            selected_cell_type = 0;  // PowerCell
+        } else if(selected_cell_pgn == 0xAF00 || selected_cell_pgn == 0xBF00 || selected_cell_pgn == 0xCF00) {
+            selected_cell_type = 2;  // No detail screen (inLINK, inControl)
+        } else {
+            selected_cell_type = 1;  // InMotion
+        }
+    }
+    
+    // Display the list
+    LCD_SetCursor(0, 0);
+    sprintf(display_buffer, "SYSTEM INV (%d) ", display_count);
+    LCD_Print(display_buffer);
+    
+    for(uint8_t line = 0; line < 3; line++) {
+        LCD_SetCursor(line + 1, 0);
+        
+        uint8_t device_index = inventory_scroll_position + line;
+        if(device_index < display_count && display_list[device_index].valid) {
+            char cursor = (device_index == inventory_selection) ? '>' : ' ';
+            sprintf(display_buffer, "%c%04X %-10s", 
+                    cursor,
+                    display_list[device_index].display_pgn,
+                    display_list[device_index].name);
+            LCD_Print(display_buffer);
+        } else {
+            LCD_Print("                ");
+        }
+    }
+}
+
+// Helper: Display 2 currents on a line
+static void DisplayCurrentPair(char *buffer, uint8_t idx1, uint8_t idx2, NetworkDevice *dev1, NetworkDevice *dev2) {
+    char *p = buffer;
+    
+    for(uint8_t n = 0; n < 2; n++) {
+        uint8_t idx = (n == 0) ? idx1 : idx2;
+        if(idx >= 10) {
+            // Pad rest of line
+            while(p - buffer < 16) *p++ = ' ';
+            break;
+        }
+        
+        uint8_t current_raw = 0;
+        // Outputs 0-4 (I1-I5) in dev1 bytes 1-5, outputs 5-9 (I6-I10) in dev2 bytes 1-5
+        if(idx < 5 && dev1 != NULL) {
+            current_raw = dev1->data[1 + idx];
+        } else if(idx >= 5 && dev2 != NULL) {
+            current_raw = dev2->data[1 + (idx - 5)];
+        }
+        
+        uint16_t current_ma = (uint16_t)current_raw * 117;
+        uint8_t amps = current_ma / 1000;
+        uint8_t tenths = (current_ma % 1000) / 100;
+        
+        if(idx < 9) {
+            p += sprintf(p, "I%d=%d.%dA ", idx+1, amps, tenths);
+        } else {
+            p += sprintf(p, "I%d=%d.%d ", idx+1, amps, tenths);
+        }
+    }
+    while(p - buffer < 16) *p++ = ' ';
+    buffer[16] = '\0';
+}
+
+void DisplayCellDetailScreen(void) {
+    char display_buffer[17];
+    NetworkDevice *dev1 = NULL;  // FF11/FF12: outputs 1-5, currents 1-5, voltage, temp
+    NetworkDevice *dev2 = NULL;  // FF21/FF22: outputs 6-10, currents 6-10, voltage, temp
+    
+    // Keep backlight on for detail screen
+    LCD_Backlight(1);
+    backlight_timer = 0;
+    
+    // Get device data based on selected cell type
+    if(selected_cell_type == 0) {
+        // PowerCell - need two PGNs for full data
+        // Message format per PowerCell docs:
+        //   Byte 0: bits 4-0 = output states (1-5 in msg1, 6-10 in msg2)
+        //           bit 4 = output 1/6, bit 0 = output 5/10
+        //   Bytes 1-5: current for 5 outputs (count * 0.117A)
+        //   Byte 6: voltage (count * 0.125V)
+        //   Byte 7: temperature in °C
+        
+        if(selected_cell_pgn == 0xFF01) {
+            // Front PowerCell
+            dev1 = Network_FindByPGN(0xFF11);
+            dev2 = Network_FindByPGN(0xFF21);
+            LCD_SetCursor(0, 0);
+            LCD_Print("FRONT POWERCELL ");
+        } else {
+            // Rear PowerCell
+            dev1 = Network_FindByPGN(0xFF12);
+            dev2 = Network_FindByPGN(0xFF22);
+            LCD_SetCursor(0, 0);
+            LCD_Print("REAR POWERCELL  ");
+        }
+        
+        // Clamp scroll position: 0=info, 1=currents 3-8, 2=currents 9-10
+        if(detail_current_scroll > 2) detail_current_scroll = 2;
+        
+        // SCROLLABLE CONTENT - Lines 2-4 scroll together
+        // Scroll 0: V/T, Outputs, I1-I2
+        // Scroll 1: I3-I4, I5-I6, I7-I8
+        // Scroll 2: I9-I10, (blank), (blank)
+        
+        if(detail_current_scroll == 0) {
+            // === SCROLL 0: V/T, Outputs, I1-I2 ===
+            
+            // Line 2: Voltage and Temperature
+            LCD_SetCursor(1, 0);
+            if(dev1 != NULL) {
+                uint8_t voltage_raw = dev1->data[6];
+                uint16_t voltage_mv = (uint16_t)voltage_raw * 125;
+                uint8_t voltage_v = voltage_mv / 1000;
+                uint8_t voltage_frac = (voltage_mv % 1000) / 100;
+                int8_t temp_c = (int8_t)dev1->data[7];
+                sprintf(display_buffer, "V=%d.%dV T=%d C ", voltage_v, voltage_frac, temp_c);
+                LCD_Print(display_buffer);
+            } else {
+                LCD_Print("V=--.- T=---    ");
+            }
+            
+            // Line 3: Output states (10 outputs)
+            // Bits 7-3 contain output states: bit 7=out1/6, bit 6=out2/7, ..., bit 3=out5/10
+            LCD_SetCursor(2, 0);
+            if(dev1 != NULL && dev2 != NULL) {
+                uint8_t out1_5 = dev1->data[0];
+                uint8_t out6_10 = dev2->data[0];
+                
+                sprintf(display_buffer, "OUT:");
+                // Outputs 1-5: bit 7=out1, bit 6=out2, bit 5=out3, bit 4=out4, bit 3=out5
+                for(uint8_t i = 0; i < 5; i++) {
+                    display_buffer[4+i] = (out1_5 & (1 << (7-i))) ? '1' : '0';
+                }
+                // Outputs 6-10: bit 7=out6, bit 6=out7, bit 5=out8, bit 4=out9, bit 3=out10
+                for(uint8_t i = 0; i < 5; i++) {
+                    display_buffer[9+i] = (out6_10 & (1 << (7-i))) ? '1' : '0';
+                }
+                display_buffer[14] = ' ';
+                display_buffer[15] = ' ';
+                display_buffer[16] = '\0';
+                LCD_Print(display_buffer);
+            } else if(dev1 != NULL) {
+                uint8_t out1_5 = dev1->data[0];
+                sprintf(display_buffer, "OUT:");
+                for(uint8_t i = 0; i < 5; i++) {
+                    display_buffer[4+i] = (out1_5 & (1 << (7-i))) ? '1' : '0';
+                }
+                for(uint8_t i = 5; i < 10; i++) {
+                    display_buffer[4+i] = '-';
+                }
+                display_buffer[14] = ' ';
+                display_buffer[15] = ' ';
+                display_buffer[16] = '\0';
+                LCD_Print(display_buffer);
+            } else {
+                LCD_Print("OUT:----------  ");
+            }
+            
+            // Line 4: I1-I2
+            LCD_SetCursor(3, 0);
+            DisplayCurrentPair(display_buffer, 0, 1, dev1, dev2);
+            LCD_Print(display_buffer);
+            
+        } else if(detail_current_scroll == 1) {
+            // === SCROLL 1: I3-I4, I5-I6, I7-I8 ===
+            LCD_SetCursor(1, 0);
+            DisplayCurrentPair(display_buffer, 2, 3, dev1, dev2);
+            LCD_Print(display_buffer);
+            
+            LCD_SetCursor(2, 0);
+            DisplayCurrentPair(display_buffer, 4, 5, dev1, dev2);
+            LCD_Print(display_buffer);
+            
+            LCD_SetCursor(3, 0);
+            DisplayCurrentPair(display_buffer, 6, 7, dev1, dev2);
+            LCD_Print(display_buffer);
+            
+        } else {
+            // === SCROLL 2: I9-I10 ===
+            LCD_SetCursor(1, 0);
+            DisplayCurrentPair(display_buffer, 8, 9, dev1, dev2);
+            LCD_Print(display_buffer);
+            
+            LCD_SetCursor(2, 0);
+            LCD_Print("                ");
+            
+            LCD_SetCursor(3, 0);
+            LCD_Print("                ");
+        }
+        
+    } else if(selected_cell_type == 1) {
+        // InMotion - single PGN with nibble-packed output states
+        // Message format (7 bytes):
+        //   Bytes 0-3: Output states (4-bit nibbles, bit 0 = ON/OFF)
+        //     Byte 0: Relay 1A (upper), Relay 1B (lower)
+        //     Byte 1: Relay 2A (upper), Relay 2B (lower)
+        //     Byte 2: MOSFET 1 (upper), MOSFET 3 (lower)
+        //     Byte 3: MOSFET 2 (upper), MOSFET 4 (lower)
+        //   Bytes 4-6: Current measurements
+        
+        uint16_t actual_pgn;
+        const char *name;
+        switch(selected_cell_pgn) {
+            case 0xFF03: actual_pgn = 0xFF33; name = "DF inMOTION NGX "; break;
+            case 0xFF04: actual_pgn = 0xFF34; name = "PF inMOTION NGX "; break;
+            case 0xFF05: actual_pgn = 0xFF35; name = "DR inMOTION NGX "; break;
+            case 0xFF06: actual_pgn = 0xFF36; name = "PR inMOTION NGX "; break;
+            default:     actual_pgn = 0xFF33; name = "inMOTION NGX    "; break;
+        }
+        
+        dev1 = Network_FindByPGN(actual_pgn);
+        
+        LCD_SetCursor(0, 0);
+        LCD_Print(name);
+        
+        if(dev1 != NULL) {
+            // Parse relay states from bytes 0-1
+            // Upper nibble bit 0 = state, lower nibble bit 0 = state
+            uint8_t relay1a = (dev1->data[0] >> 4) & 0x01;  // Byte 0 upper
+            uint8_t relay1b = (dev1->data[0]) & 0x01;       // Byte 0 lower
+            uint8_t relay2a = (dev1->data[1] >> 4) & 0x01;  // Byte 1 upper
+            uint8_t relay2b = (dev1->data[1]) & 0x01;       // Byte 1 lower
+            
+            // Parse MOSFET states from bytes 2-3
+            // Byte 2: Out1 (upper nibble), Out2 (lower nibble)
+            // Byte 3: Out3 (upper nibble), Out4 (lower nibble)
+            uint8_t mosfet1 = (dev1->data[2] >> 4) & 0x01;  // Byte 2 upper = Output 1
+            uint8_t mosfet2 = (dev1->data[2]) & 0x01;       // Byte 2 lower = Output 2
+            uint8_t mosfet3 = (dev1->data[3] >> 4) & 0x01;  // Byte 3 upper = Output 3
+            uint8_t mosfet4 = (dev1->data[3]) & 0x01;       // Byte 3 lower = Output 4
+            
+            // Line 2: Relay states (1A, 1B, 2A, 2B)
+            LCD_SetCursor(1, 0);
+            sprintf(display_buffer, "RLY: %c %c %c %c   ",
+                    relay1a ? '1' : '0',
+                    relay1b ? '1' : '0',
+                    relay2a ? '1' : '0',
+                    relay2b ? '1' : '0');
+            LCD_Print(display_buffer);
+            
+            // Line 3: MOSFET output states (1, 2, 3, 4)
+            LCD_SetCursor(2, 0);
+            sprintf(display_buffer, "OUT: %c %c %c %c   ",
+                    mosfet1 ? '1' : '0',
+                    mosfet2 ? '1' : '0',
+                    mosfet3 ? '1' : '0',
+                    mosfet4 ? '1' : '0');
+            LCD_Print(display_buffer);
+            
+            // Line 4: Empty
+            LCD_SetCursor(3, 0);
+            LCD_Print("                ");
+        } else {
+            LCD_SetCursor(1, 0);
+            LCD_Print("RLY: - - - -    ");
+            LCD_SetCursor(2, 0);
+            LCD_Print("OUT: - - - -    ");
+            LCD_SetCursor(3, 0);
+            LCD_Print("                ");
+        }
+    }
+}
+
+void DisplaySystemInfoScreen(void) {
+    char display_buffer[17];
+    uint8_t fw_major, fw_minor;
+    uint8_t customer_name[4];
+    
+    // Keep backlight on for sub-menu screens
+    LCD_Backlight(1);
+    backlight_timer = 0;  // Disable timer so it stays on
+    
+    // Read firmware version from EEPROM
+    fw_major = EEPROM_Config_ReadByte(EEPROM_CFG_FW_MAJOR);
      fw_minor = EEPROM_Config_ReadByte(EEPROM_CFG_FW_MINOR);
      
      // Read customer name from EEPROM
@@ -1110,7 +1420,7 @@ uint8_t ProcessPendingCANMessages(void) {
         
         uint8_t rx_sa = can_msg.id & 0xFF;
         uint16_t rx_pgn = (can_msg.id >> 8) & 0xFFFF;
-        Network_UpdateDevice(rx_sa, rx_pgn, system_time_ms);
+        Network_UpdateDevice(rx_sa, rx_pgn, system_time_ms, can_msg.data);
         
         CAN_Config_ProcessMessage((CAN_Message*)&can_msg);
         Climate_ProcessMessage(can_msg.id, can_msg.data);
@@ -1264,11 +1574,12 @@ void TransmitAggregatedMessages(uint8_t reason) {
      
      system_time_ms++;
      
-     if(led_on_timer > 0) led_on_timer--;
-     if(scan_timer > 0) scan_timer--;
-     if(display_timer > 0) display_timer--;
-     if(button_debounce_timer > 0) button_debounce_timer--;
-     if(backlight_timer > 0) backlight_timer--;
+    if(led_on_timer > 0) led_on_timer--;
+    if(scan_timer > 0) scan_timer--;
+    if(display_timer > 0) display_timer--;
+    if(button_debounce_timer > 0) button_debounce_timer--;
+    if(backlight_timer > 0) backlight_timer--;
+    if(detail_refresh_timer > 0) detail_refresh_timer--;
      
      pattern_timer++;
      if(pattern_timer >= 250) {

@@ -16,17 +16,25 @@ void Network_Init(void) {
         devices[i].pgn = 0;
         devices[i].last_seen_ms = 0;
         devices[i].active = 0;
+        for(uint8_t j = 0; j < 8; j++) {
+            devices[i].data[j] = 0;
+        }
     }
     device_count = 0;
 }
 
-void Network_UpdateDevice(uint8_t sa, uint16_t pgn, uint32_t timestamp_ms) {
+void Network_UpdateDevice(uint8_t sa, uint16_t pgn, uint32_t timestamp_ms, uint8_t *data) {
     // First, check if this SA+PGN combination already exists
     for(uint8_t i = 0; i < MAX_NETWORK_DEVICES; i++) {
         if(devices[i].active) {
             if(devices[i].source_addr == sa && devices[i].pgn == pgn) {
-                // Found existing device with same SA and PGN - update timestamp
+                // Found existing device with same SA and PGN - update timestamp and data
                 devices[i].last_seen_ms = timestamp_ms;
+                if(data != NULL) {
+                    for(uint8_t j = 0; j < 8; j++) {
+                        devices[i].data[j] = data[j];
+                    }
+                }
                 return;
             }
         }
@@ -40,6 +48,15 @@ void Network_UpdateDevice(uint8_t sa, uint16_t pgn, uint32_t timestamp_ms) {
             devices[i].pgn = pgn;
             devices[i].last_seen_ms = timestamp_ms;
             devices[i].active = 1;
+            if(data != NULL) {
+                for(uint8_t j = 0; j < 8; j++) {
+                    devices[i].data[j] = data[j];
+                }
+            } else {
+                for(uint8_t j = 0; j < 8; j++) {
+                    devices[i].data[j] = 0;
+                }
+            }
             device_count++;
             return;
         }
@@ -89,6 +106,15 @@ NetworkDevice* Network_GetDevice(uint8_t index) {
     }
     
     return NULL;  // Index out of range
+}
+
+NetworkDevice* Network_FindByPGN(uint16_t pgn) {
+    for(uint8_t i = 0; i < MAX_NETWORK_DEVICES; i++) {
+        if(devices[i].active && devices[i].pgn == pgn) {
+            return &devices[i];
+        }
+    }
+    return NULL;  // Not found
 }
 
 void Network_Clear(void) {

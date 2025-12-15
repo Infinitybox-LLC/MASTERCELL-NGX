@@ -18,14 +18,16 @@ typedef struct {
     uint16_t pgn;          // PGN this device transmits
     uint32_t last_seen_ms; // Millisecond timestamp when last seen
     uint8_t active;        // 1 if this slot is in use, 0 if empty
+    uint8_t data[8];       // Last received CAN data payload
 } NetworkDevice;
 
 // Function prototypes
 void Network_Init(void);
-void Network_UpdateDevice(uint8_t sa, uint16_t pgn, uint32_t timestamp_ms);
+void Network_UpdateDevice(uint8_t sa, uint16_t pgn, uint32_t timestamp_ms, uint8_t *data);
 void Network_CheckTimeouts(uint32_t current_time_ms);
 uint8_t Network_GetDeviceCount(void);
 NetworkDevice* Network_GetDevice(uint8_t index);
+NetworkDevice* Network_FindByPGN(uint16_t pgn);
 void Network_Clear(void);
 
 #endif // NETWORK_INVENTORY_H
