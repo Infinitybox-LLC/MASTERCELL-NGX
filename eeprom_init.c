@@ -22,7 +22,6 @@
 #include "eeprom_cases.h"
 #include "eeprom_config.h"
 #include <string.h>
-#include <stdio.h>  // For sprintf (if needed)
 
 #define FCY 16000000UL
 #include <libpic30.h>
@@ -76,7 +75,7 @@ uint8_t EEPROM_WriteWord(uint16_t address, uint16_t data) {
     
     if(timeout == 0) {
         write_errors++;
-        last_error_type = 1;  // Timeout
+        last_error_type = 1;  // Timeout on ERASE
         return 0;
     }
     
@@ -106,7 +105,7 @@ uint8_t EEPROM_WriteWord(uint16_t address, uint16_t data) {
     
     if(timeout == 0) {
         write_errors++;
-        last_error_type = 1;  // Timeout
+        last_error_type = 1;  // Timeout on WRITE
         return 0;
     }
     
@@ -124,6 +123,7 @@ uint8_t EEPROM_WriteWord(uint16_t address, uint16_t data) {
     
     words_written++;
     last_error_type = 0;  // Success
+    
     return 1;
 }
 

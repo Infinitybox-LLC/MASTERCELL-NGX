@@ -157,6 +157,18 @@ uint8_t Inputs_GetIgnitionState(void);
 void Inputs_SetCANIgnition(uint8_t state);
 
 /**
+ * Get the security state from inLINK (PGN 0xAF00, byte 4, bit 1)
+ * @return 1 if DISARMED (OK to start), 0 if ARMED (blocks start)
+ */
+uint8_t Inputs_GetSecurityState(void);
+
+/**
+ * Set the CAN-based security state from inLINK
+ * @param state 1 = DISARMED, 0 = ARMED
+ */
+void Inputs_SetCANSecurity(uint8_t state);
+
+/**
  * Update the ignition flag based on current input states and EEPROM configuration
  * This checks all regular ignition inputs (byte 4 bits 0-1 = 0x01, NOT one-button start)
  * and sets the ignition flag if ANY are ON, clears if ALL are OFF

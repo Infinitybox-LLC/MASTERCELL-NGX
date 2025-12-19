@@ -50,6 +50,10 @@ static uint8_t ignition_flag = 0;
 // This is OR'd with physical ignition inputs
 static uint8_t can_ignition_state = 0;
 
+// CAN-based security state from inLINK (PGN 0xAF00, byte 4, bit 1)
+// 1 = DISARMED (security OK to start), 0 = ARMED (security blocks start)
+static uint8_t can_security_state = 0;
+
 // One-button start state tracking (one per input that is configured as one-button start)
 typedef struct {
     uint8_t input_num;              // Which input this is tracking
@@ -59,6 +63,7 @@ typedef struct {
     uint8_t ignition_is_on;         // Current latching ignition state
     uint8_t starter_is_on;          // Current starter state
     uint8_t ignition_set_this_press; // Flag: Did we already set ignition during this press?
+    uint8_t neutral_was_on;         // Was neutral safety ON when button was pressed? (sequence requirement)
 } OneButtonStartState;
 
 #define MAX_ONE_BUTTON_INPUTS   8   // Support up to 8 one-button start inputs
@@ -197,6 +202,12 @@ static void HandleOneButtonStart(uint8_t input_num) {
         state->ignition_was_on = state->ignition_is_on;  // Remember current latching state
         state->ignition_set_this_press = 0;  // Reset flag - haven't set ignition yet for this press
         
+        // NEUTRAL SAFETY SEQUENCE REQUIREMENT:
+        // Capture neutral safety state at the moment button is pressed.
+        // If neutral is OFF when pressed, one-button start won't activate
+        // even if neutral turns ON later while button is still held.
+        state->neutral_was_on = input_states[15];  // IN16 = index 15 = neutral safety
+        
         // Don't change anything yet, wait to see if it's a quick press or hold
     }
     else if(current_button_state == 0 && state->active) {
@@ -206,7 +217,7 @@ static void HandleOneButtonStart(uint8_t input_num) {
         uint32_t press_duration = system_tick_ms - state->press_start_time;
         
         if(press_duration < ONE_BUTTON_QUICK_PRESS_MS) {
-            // QUICK PRESS - Toggle ignition only
+            // QUICK PRESS - Toggle ignition only (no neutral safety check for ignition)
             // Use the ignition_was_on value that was captured when button was pressed
             if(state->ignition_was_on) {
                 // Ignition WAS on when we pressed, so turn it OFF
@@ -216,11 +227,9 @@ static void HandleOneButtonStart(uint8_t input_num) {
                 ignition_flag = 0;
                 EEPROM_UpdateIgnitionTrackedCases(ignition_flag);  // Update track ignition cases
                 one_button_state_changed = 1;  // Flag for main.c to transmit
-                
-                // Force a transmission of the cleared state
-                // The active case has been removed, so the next aggregation will send all zeros
             } else {
                 // Ignition WAS off when we pressed, so turn it ON
+                // (Ignition always works - no neutral safety requirement)
                 state->ignition_is_on = 1;
                 state->starter_is_on = 0;
                 EEPROM_SetManualCase(input_num, 1, 0);
@@ -240,6 +249,7 @@ static void HandleOneButtonStart(uint8_t input_num) {
                 one_button_state_changed = 1;  // Flag for main.c to transmit
             } else {
                 // Ignition WAS off - turn off starter, leave ignition on
+                // (Ignition always works - starter was already handled during hold)
                 state->starter_is_on = 0;
                 state->ignition_is_on = 1;
                 EEPROM_SetManualCase(input_num, 1, 0);  // Ignition ON, starter OFF
@@ -260,6 +270,7 @@ static void HandleOneButtonStart(uint8_t input_num) {
         // On the FIRST scan after button press (when starting from ignition OFF),
         // turn on ignition IMMEDIATELY. Only do this ONCE per button press.
         // This gives the fuel pump time to prime before starter engages
+        // (Ignition always works - no neutral safety requirement)
         if(!state->ignition_was_on && !state->ignition_set_this_press) {
             // Just started holding, turn on ignition now
             state->ignition_is_on = 1;
@@ -273,9 +284,10 @@ static void HandleOneButtonStart(uint8_t input_num) {
         
         // After holding for 1000ms (1 second), engage starter
         // This gives fuel pump 1 full second to prime
+        // NEUTRAL SAFETY CHECK: Only engage starter if neutral was ON when button was pressed
         if(press_duration >= ONE_BUTTON_FUEL_PUMP_DELAY_MS && !state->ignition_was_on) {
-            // Engage starter (only if we started with ignition off)
-            if(!state->starter_is_on) {
+            // Engage starter (only if we started with ignition off AND neutral was on)
+            if(!state->starter_is_on && state->neutral_was_on) {
                 state->starter_is_on = 1;
                 state->ignition_is_on = 1;
                 EEPROM_SetManualCase(input_num, 1, 1);  // Ignition ON, starter ON
@@ -362,6 +374,7 @@ void Inputs_Init(void) {
         one_button_states[i].ignition_is_on = 0;
         one_button_states[i].starter_is_on = 0;
         one_button_states[i].ignition_set_this_press = 0;
+        one_button_states[i].neutral_was_on = 0;
     }
     
     // Initialize system tick
@@ -481,6 +494,18 @@ void Inputs_SetCANIgnition(uint8_t state) {
     if (old_state != can_ignition_state) {
         EEPROM_UpdateIgnitionTrackedCases(Inputs_GetIgnitionState());
     }
+}
+
+// Get the security state from inLINK (PGN 0xAF00, byte 4, bit 1)
+// Returns 1 if DISARMED (OK to start), 0 if ARMED (blocks start)
+uint8_t Inputs_GetSecurityState(void) {
+    return can_security_state;
+}
+
+// Set the CAN-based security state from inLINK (PGN 0xAF00, byte 4, bit 1)
+// state: 1 = DISARMED, 0 = ARMED
+void Inputs_SetCANSecurity(uint8_t state) {
+    can_security_state = state ? 1 : 0;
 }
 
 // Update the ignition flag based on all ignition inputs

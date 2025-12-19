@@ -128,6 +128,7 @@ void DisplayCellDetailScreen(void);
     Inputs_Init();
     LCD_Init();
     Buttons_Init();
+    Buttons_DetectStuck();  // Detect any stuck buttons (e.g., RB0 without pullup)
     J1939_Init();
     InLink_Init();
     Network_Init();
@@ -180,11 +181,6 @@ void DisplayCellDetailScreen(void);
         eeprom_config_type_t selected_config = CONFIG_STD_FRONT_ENGINE;
         uint8_t done = 0;
         uint8_t button_id;
-        
-        // Wait for buttons to be released first
-        while(Buttons_Scan() != BTN_ID_NONE) {
-            __delay_ms(10);
-        }
         
         LCD_Clear();
         LCD_SetCursor(0, 0);
@@ -272,11 +268,7 @@ void DisplayCellDetailScreen(void);
         
         EEPROM_InitWithConfig(selected_config);
          LED_PIN = 0;
-         
-         LCD_SetCursor(1, 0);
-         sprintf(display_buffer, "Complete!       ");
-         LCD_Print(display_buffer);
-         __delay_ms(2000);
+         __delay_ms(1000);
      }
      
      LCD_Clear();

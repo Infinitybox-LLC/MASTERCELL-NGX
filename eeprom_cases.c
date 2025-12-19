@@ -471,25 +471,35 @@
                  continue;
              }
              
-             // Try to read the case
-             CaseData case_data;
-             
-             if(EEPROM_ReadCase(addr, &case_data)) {
-                 // Check if this case has pattern timing (Case 1 sets the pattern for all cases)
-                 if(i == 0 && (case_data.pattern_on_time != 0 || case_data.pattern_off_time != 0)) {
-                     has_pattern = 1;
-                     on_time = case_data.pattern_on_time;
-                     off_time = case_data.pattern_off_time;
-                 }
-                 
-                 // Add to active list
-                 active_cases[active_case_count].input_num = input_num;
-                 active_cases[active_case_count].case_num = i;
-                 active_cases[active_case_count].is_on_case = 1;  // ON case
-                 active_cases[active_case_count].needs_removal_after_send = 0;  // Keep until input turns off
-                 active_cases[active_case_count].case_data = case_data;
-                 active_case_count++;
-             }
+            // Try to read the case
+            CaseData case_data;
+            
+            if(EEPROM_ReadCase(addr, &case_data)) {
+                // NEUTRAL SAFETY SEQUENCE REQUIREMENT:
+                // If this case requires neutral safety (IN16 = must_be_on[1] bit 7),
+                // neutral safety must be ON BEFORE the input is pressed.
+                // This prevents the starter from engaging if neutral is pressed AFTER
+                // the starter button is already being held.
+                // IN16 = input 15 (0-indexed) = byte 1, bit 7 (0x80)
+                if((case_data.must_be_on[1] & 0x80) && !Inputs_GetState(15)) {
+                    continue;  // Skip - neutral safety required but not ON at activation
+                }
+                
+                // Check if this case has pattern timing (Case 1 sets the pattern for all cases)
+                if(i == 0 && (case_data.pattern_on_time != 0 || case_data.pattern_off_time != 0)) {
+                    has_pattern = 1;
+                    on_time = case_data.pattern_on_time;
+                    off_time = case_data.pattern_off_time;
+                }
+                
+                // Add to active list
+                active_cases[active_case_count].input_num = input_num;
+                active_cases[active_case_count].case_num = i;
+                active_cases[active_case_count].is_on_case = 1;  // ON case
+                active_cases[active_case_count].needs_removal_after_send = 0;  // Keep until input turns off
+                active_cases[active_case_count].case_data = case_data;
+                active_case_count++;
+            }
          }
          
          // Configure pattern timer if needed
@@ -703,8 +713,14 @@ static uint8_t CheckInputConditions(uint8_t *must_be_on, uint8_t *must_be_off) {
         return 0;  // Must be off requires no ignition, but ignition is ON
     }
     
-    // TODO: Check security condition (byte 5, bit 4 = 0x10)
-    // Security state needs to be implemented
+    // Check security condition (byte 5, bit 4 = 0x10)
+    // Security state from inLINK: 1 = DISARMED (OK), 0 = ARMED (blocks)
+    if((must_be_on[5] & 0x10) && !Inputs_GetSecurityState()) {
+        return 0;  // Must be on requires security DISARMED, but security is ARMED
+    }
+    if((must_be_off[5] & 0x10) && Inputs_GetSecurityState()) {
+        return 0;  // Must be off requires security ARMED, but security is DISARMED
+    }
     
     // TODO: Check frequency/analog thresholds (bytes 6-7)
     // These are for future expansion

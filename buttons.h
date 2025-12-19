@@ -35,7 +35,9 @@
 
 // Function prototypes
 void Buttons_Init(void);
+void Buttons_DetectStuck(void);     // Call after init to detect stuck buttons
 uint8_t Buttons_Scan(void);
+uint8_t Buttons_GetRawState(void);  // Non-blocking raw pin state
 const char* Buttons_GetName(uint8_t button);
 
 #endif // BUTTONS_H

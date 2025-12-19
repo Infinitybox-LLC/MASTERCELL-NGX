@@ -180,8 +180,8 @@ void EEPROM_LoadFrontEngine(void) {
     // IN05 - 2 ON cases - Headlights
     ParseCANID("18FF011E", &priority, &pgn, &source_addr);
     memset(data, 0x00, 8);
-    data[0] = 0x08;
-    data[1] = 0x00;
+    data[0] = 0x00;
+    data[1] = 0x02;
     data[2] = 0x00;
     data[3] = 0x00;
     data[4] = 0x00;
@@ -228,15 +228,13 @@ void EEPROM_LoadFrontEngine(void) {
     addr += 32;
     EEPROM_WriteInvalidCase(addr);
     addr += 32;
-    EEPROM_WriteInvalidCase(addr);
-    addr += 32;
 
     // IN07 - 1 ON case - High Beams
     ParseCANID("18FF011E", &priority, &pgn, &source_addr);
     memset(data, 0x00, 8);
-    data[0] = 0x02;
+    data[0] = 0x00;
     data[1] = 0x00;
-    data[2] = 0x00;
+    data[2] = 0x80;
     data[3] = 0x00;
     data[4] = 0x00;
     data[5] = 0x00;
@@ -259,9 +257,9 @@ void EEPROM_LoadFrontEngine(void) {
     EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x33, 0, data);  
     addr += 32;
     
-    ParseCANID("18FF021E", &priority, &pgn, &source_addr);
+    ParseCANID("18FF021E", &priority, &pgn, &source_addr);  // Rear PowerCell
     memset(data, 0x00, 8);
-    data[0] = 0xC0;  // Both rear turn signals
+    data[0] = 0xC0;  // Both rear turn signals (outputs 1 and 2)
     data[1] = 0x00;
     data[2] = 0x00;
     data[3] = 0x00;
@@ -299,8 +297,8 @@ void EEPROM_LoadFrontEngine(void) {
     ParseCANID("18FF011E", &priority, &pgn, &source_addr);
     memset(data, 0x00, 8);
     data[0] = 0x00;
-    data[1] = 0x40;
-    data[2] = 0x00;
+    data[1] = 0x00;
+    data[2] = 0x40;
     data[3] = 0x00;
     data[4] = 0x00;
     data[5] = 0x00;
@@ -367,26 +365,22 @@ void EEPROM_LoadFrontEngine(void) {
     EEPROM_WriteInvalidCase(addr);
     addr += 32;
 
-    // IN15 - 6 ON cases - One Button Start (Requires IN16 Neutral Safety)
-    // must_be_on[1] = 0x80 means IN16 (index 15) must be ON
-    {
-        uint8_t must_be_on[8] = {0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};  // IN16 required
-        ParseCANID("18FF011E", &priority, &pgn, &source_addr);
-        memset(data, 0x00, 8);
-        data[0] = 0x20;
-        data[7] = 0x80;
-        EEPROM_WriteCaseEx(addr, priority, pgn, source_addr, 0x11, 0x00, must_be_on, NULL, data);  // One-button start
-    }
+    // IN15 - 6 ON cases - One Button Start (No neutral safety requirement)
+    ParseCANID("18FF011E", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x20;
+    data[7] = 0x80;
+    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x11, 0x00, 0, data);  // One-button start
     addr += 32;
     
-    // Second case for one-button start (starter engage after delay) - also requires neutral safety
-    {
-        uint8_t must_be_on[8] = {0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};  // IN16 required
-        ParseCANID("18FF011E", &priority, &pgn, &source_addr);
-        memset(data, 0x00, 8);
-        data[0] = 0x02;
-        EEPROM_WriteCaseEx(addr, priority, pgn, source_addr, 0x01, 0x1E, must_be_on, NULL, data);  // 30x100ms delay
-    }
+    // Second case for one-button start (starter engage after delay) - requires neutral safety
+    
+    uint8_t must_be_on[8] = {0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};  // IN16 required
+    ParseCANID("18FF011E", &priority, &pgn, &source_addr);
+    memset(data, 0x00, 8);
+    data[0] = 0x02;
+    EEPROM_WriteCaseEx(addr, priority, pgn, source_addr, 0x01, 0x1E, must_be_on, NULL, data);  // 30x100ms delay
+    
     addr += 32;
     
     EEPROM_WriteInvalidCase(addr);
@@ -449,8 +443,8 @@ void EEPROM_LoadFrontEngine(void) {
     // IN19 - 2 ON cases- OPEN
     ParseCANID("18FF011E", &priority, &pgn, &source_addr);
     memset(data, 0x00, 8);
-    data[0] = 0x01;
-    data[1] = 0x00;
+    data[0] = 0x00;
+    data[1] = 0x40;
     data[2] = 0x00;
     data[3] = 0x00;
     data[4] = 0x00;
@@ -687,8 +681,6 @@ void EEPROM_LoadFrontEngine(void) {
     data[7] = 0x00;
     EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
     addr += 32;
-    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
-    addr += 32;
     EEPROM_WriteInvalidCase(addr);
     addr += 32;
 
@@ -784,8 +776,8 @@ void EEPROM_LoadFrontEngine(void) {
     ParseCANID("18FF011E", &priority, &pgn, &source_addr);
     memset(data, 0x00, 8);
     data[0] = 0x00;
-    data[1] = 0x40;
-    data[2] = 0x00;
+    data[1] = 0x00;
+    data[2] = 0x40;
     data[3] = 0x00;
     data[4] = 0x00;
     data[5] = 0x00;

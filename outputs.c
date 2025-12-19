@@ -113,12 +113,17 @@ uint8_t Outputs_ProcessMessage(uint32_t can_id, uint8_t *data) {
     Outputs_Set(7, (output_states & 0x40) ? 1 : 0);
     Outputs_Set(8, (output_states & 0x80) ? 1 : 0);
     
-    // Process byte 4 for inLINK ignition (only from external AF00, not local FF00)
-    // Byte 4, bit 0: Ignition ON from inLINK
-    // This is treated the same as physical ignition input for EEPROM cases
+    // Process byte 4 for inLINK ignition and security (only from external AF00, not local FF00)
+    // Byte 4, bit 0: Ignition (1=ON, 0=OFF)
+    // Byte 4, bit 1: Security (1=DISARMED, 0=ARMED)
     if (pgn == OUTPUTS_PGN) {
         uint8_t can_ignition = (data[4] & 0x01) ? 1 : 0;
+        uint8_t can_security = (data[4] & 0x02) ? 1 : 0;
         Inputs_SetCANIgnition(can_ignition);
+        Inputs_SetCANSecurity(can_security);
+        
+        // Drive OUT6 security indicator: DISARMED = light ON, ARMED = light OFF
+        Outputs_SetSecurity(can_security);
     }
     
     return 1;  // Message processed
