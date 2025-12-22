@@ -16,6 +16,7 @@
       <itemPath>inlink.h</itemPath>
       <itemPath>climate.h</itemPath>
       <itemPath>outputs.h</itemPath>
+      <itemPath>inreserve.h</itemPath>
     </logicalFolder>
     <logicalFolder name="ExternalFiles"
                    displayName="Important Files"
@@ -45,6 +46,7 @@
       <itemPath>eeprom_init_customer.c</itemPath>
       <itemPath>climate.c</itemPath>
       <itemPath>outputs.c</itemPath>
+      <itemPath>inreserve.c</itemPath>
     </logicalFolder>
   </logicalFolder>
   <sourceRootList>
@@ -285,7 +287,7 @@
                   value="${memories.instruction.ram.ranges}"/>
         <property key="memories.programmemory" value="true"/>
         <property key="memories.programmemory.ranges" value="0-17fff"/>
-        <property key="poweroptions.powerenable" value="true"/>
+        <property key="poweroptions.powerenable" value="false"/>
         <property key="programmerToGoImageName" value="MCNGX_Test_ptg"/>
         <property key="programoptions.donoteraseauxmem" value="false"/>
         <property key="programoptions.eraseb4program" value="true"/>
@@ -377,7 +379,7 @@
                   value="${memories.instruction.ram.ranges}"/>
         <property key="memories.programmemory" value="true"/>
         <property key="memories.programmemory.ranges" value="0-17fff"/>
-        <property key="poweroptions.powerenable" value="true"/>
+        <property key="poweroptions.powerenable" value="false"/>
         <property key="programmerToGoFilePath"
                   value="D:/jharr/Documents/MASTERCELL/MASTERCELL X/Production Code/TestCode/MCNGX_Test.X/debug/default/MCNGX_Test_ptg"/>
         <property key="programmerToGoImageName" value="MCNGX_Test_ptg"/>

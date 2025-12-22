@@ -202,12 +202,6 @@ static void HandleOneButtonStart(uint8_t input_num) {
         state->ignition_was_on = state->ignition_is_on;  // Remember current latching state
         state->ignition_set_this_press = 0;  // Reset flag - haven't set ignition yet for this press
         
-        // NEUTRAL SAFETY SEQUENCE REQUIREMENT:
-        // Capture neutral safety state at the moment button is pressed.
-        // If neutral is OFF when pressed, one-button start won't activate
-        // even if neutral turns ON later while button is still held.
-        state->neutral_was_on = input_states[15];  // IN16 = index 15 = neutral safety
-        
         // Don't change anything yet, wait to see if it's a quick press or hold
     }
     else if(current_button_state == 0 && state->active) {
@@ -284,10 +278,11 @@ static void HandleOneButtonStart(uint8_t input_num) {
         
         // After holding for 1000ms (1 second), engage starter
         // This gives fuel pump 1 full second to prime
-        // NEUTRAL SAFETY CHECK: Only engage starter if neutral was ON when button was pressed
+        // NEUTRAL SAFETY CHECK: Check neutral NOW (after ignition has been on for 1 second)
+        // This allows neutral safety switches that require ignition to be ON to work
         if(press_duration >= ONE_BUTTON_FUEL_PUMP_DELAY_MS && !state->ignition_was_on) {
-            // Engage starter (only if we started with ignition off AND neutral was on)
-            if(!state->starter_is_on && state->neutral_was_on) {
+            // Engage starter (only if we started with ignition off AND neutral is currently ON)
+            if(!state->starter_is_on && input_states[15]) {  // IN16 = index 15 = neutral safety
                 state->starter_is_on = 1;
                 state->ignition_is_on = 1;
                 EEPROM_SetManualCase(input_num, 1, 1);  // Ignition ON, starter ON

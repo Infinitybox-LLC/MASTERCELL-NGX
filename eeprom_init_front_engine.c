@@ -43,8 +43,10 @@ void EEPROM_LoadFrontEngine(void) {
     // Byte 6-7: Rebroadcast Mode (0x01) + Init Stamp (0xA5)
     EEPROM_WriteBytePair(0x0006, DEFAULT_REBROADCAST_MODE, DEFAULT_INIT_STAMP);
     
-    // Byte 8-9: Reserved (0xFF) + Reserved (0xFF)
-    EEPROM_WriteBytePair(0x0008, 0xFF, 0xFF);
+    // Byte 8-9: inRESERVE config (default: DISABLED, Output 9, 30sec, 12.3V)
+    // Byte 8: [CellID=0][Output=9] = 0x09 (disabled)
+    // Byte 9: [Time=0 (30sec)][Voltage=2 (12.3V)] = 0x02
+    EEPROM_WriteBytePair(0x0008, DEFAULT_INRESERVE_1, DEFAULT_INRESERVE_2);
     
     // Byte 10-11: Write Request PGN A (0xFF) + Write Request PGN B (0x10)
     EEPROM_WriteBytePair(0x000A, 0xFF, 0x10);
@@ -85,18 +87,14 @@ void EEPROM_LoadFrontEngine(void) {
     // Starting address for ON cases
     addr = 0x0022;
 
-    // IN01 - 4 ON cases - Ignition
-    ParseCANID("18FF011E", &priority, &pgn, &source_addr);
-    memset(data, 0x00, 8);
-    data[0] = 0x20;
-    data[1] = 0x00;
-    data[2] = 0x00;
-    data[3] = 0x00;
-    data[4] = 0x00;
-    data[5] = 0x00;
-    data[6] = 0x00;
-    data[7] = 0x00;
-    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x01, 0x00, 0, data);
+    // IN01 - 4 ON cases - Ignition (Requires Security DISARMED)
+    {
+        uint8_t must_be_on[8] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00};  // Security required
+        ParseCANID("18FF011E", &priority, &pgn, &source_addr);
+        memset(data, 0x00, 8);
+        data[0] = 0x20;
+        EEPROM_WriteCaseEx(addr, priority, pgn, source_addr, 0x01, 0x00, must_be_on, NULL, data);
+    }
     addr += 32;
     
     EEPROM_WriteInvalidCase(addr);
@@ -108,10 +106,11 @@ void EEPROM_LoadFrontEngine(void) {
     EEPROM_WriteInvalidCase(addr);
     addr += 32;
 
-    // IN02 - 2 ON cases - Starter (Requires IN16 Neutral Safety)
+    // IN02 - 2 ON cases - Starter (Requires IN16 Neutral Safety + Security DISARMED)
     // must_be_on[1] = 0x80 means IN16 (index 15) must be ON
+    // must_be_on[5] = 0x10 means Security must be DISARMED
     {
-        uint8_t must_be_on[8] = {0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};  // IN16 required
+        uint8_t must_be_on[8] = {0x00, 0x80, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00};  // IN16 + Security required
         ParseCANID("18FF011E", &priority, &pgn, &source_addr);
         memset(data, 0x00, 8);
         data[0] = 0x10;
@@ -343,18 +342,14 @@ void EEPROM_LoadFrontEngine(void) {
     EEPROM_WriteInvalidCase(addr);
     addr += 32;
 
-    // IN13 - 2 ON cases Fuel Pump
-    ParseCANID("18FF021E", &priority, &pgn, &source_addr);
-    memset(data, 0x00, 8);
-    data[0] = 0x00;
-    data[1] = 0x40;
-    data[2] = 0x00;
-    data[3] = 0x00;
-    data[4] = 0x00;
-    data[5] = 0x00;
-    data[6] = 0x00;
-    data[7] = 0x00;
-    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);  
+    // IN13 - 2 ON cases Fuel Pump (Requires Security DISARMED)
+    {
+        uint8_t must_be_on[8] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00};  // Security required
+        ParseCANID("18FF021E", &priority, &pgn, &source_addr);
+        memset(data, 0x00, 8);
+        data[1] = 0x40;
+        EEPROM_WriteCaseEx(addr, priority, pgn, source_addr, 0x00, 0x00, must_be_on, NULL, data);
+    }
     addr += 32;
     EEPROM_WriteInvalidCase(addr);
     addr += 32;
@@ -365,22 +360,25 @@ void EEPROM_LoadFrontEngine(void) {
     EEPROM_WriteInvalidCase(addr);
     addr += 32;
 
-    // IN15 - 6 ON cases - One Button Start (No neutral safety requirement)
-    ParseCANID("18FF011E", &priority, &pgn, &source_addr);
-    memset(data, 0x00, 8);
-    data[0] = 0x20;
-    data[7] = 0x80;
-    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x11, 0x00, 0, data);  // One-button start
+    // IN15 - 6 ON cases - One Button Start (Requires Security DISARMED)
+    {
+        uint8_t must_be_on[8] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00};  // Security required
+        ParseCANID("18FF011E", &priority, &pgn, &source_addr);
+        memset(data, 0x00, 8);
+        data[0] = 0x20;
+        data[7] = 0x80;
+        EEPROM_WriteCaseEx(addr, priority, pgn, source_addr, 0x11, 0x00, must_be_on, NULL, data);  // One-button start
+    }
     addr += 32;
     
-    // Second case for one-button start (starter engage after delay) - requires neutral safety
-    
-    uint8_t must_be_on[8] = {0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};  // IN16 required
-    ParseCANID("18FF011E", &priority, &pgn, &source_addr);
-    memset(data, 0x00, 8);
-    data[0] = 0x02;
-    EEPROM_WriteCaseEx(addr, priority, pgn, source_addr, 0x01, 0x1E, must_be_on, NULL, data);  // 30x100ms delay
-    
+    // Second case for one-button start (starter engage after delay) - requires neutral safety + security
+    {
+        uint8_t must_be_on[8] = {0x00, 0x80, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00};  // IN16 + Security required
+        ParseCANID("18FF011E", &priority, &pgn, &source_addr);
+        memset(data, 0x00, 8);
+        data[0] = 0x02;
+        EEPROM_WriteCaseEx(addr, priority, pgn, source_addr, 0x01, 0x1E, must_be_on, NULL, data);  // 30x100ms delay
+    }
     addr += 32;
     
     EEPROM_WriteInvalidCase(addr);
@@ -788,18 +786,14 @@ void EEPROM_LoadFrontEngine(void) {
     EEPROM_WriteInvalidCase(addr);
     addr += 32;
 
-    // HSIN02 - 2 ON cases - High Side Fuel
-    ParseCANID("18FF021E", &priority, &pgn, &source_addr);
-    memset(data, 0x00, 8);
-    data[0] = 0x00;
-    data[1] = 0x40;
-    data[2] = 0x00;
-    data[3] = 0x00;
-    data[4] = 0x00;
-    data[5] = 0x00;
-    data[6] = 0x00;
-    data[7] = 0x00;
-    EEPROM_WriteCase(addr, priority, pgn, source_addr, 0x00, 0x00, 0, data);
+    // HSIN02 - 2 ON cases - High Side Fuel (Requires Security DISARMED)
+    {
+        uint8_t must_be_on[8] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00};  // Security required
+        ParseCANID("18FF021E", &priority, &pgn, &source_addr);
+        memset(data, 0x00, 8);
+        data[1] = 0x40;
+        EEPROM_WriteCaseEx(addr, priority, pgn, source_addr, 0x00, 0x00, must_be_on, NULL, data);
+    }
     addr += 32;
     EEPROM_WriteInvalidCase(addr);
     addr += 32;

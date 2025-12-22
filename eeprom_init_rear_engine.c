@@ -43,8 +43,10 @@ void EEPROM_LoadRearEngine(void) {
     // Byte 6-7: Rebroadcast Mode (0x01) + Init Stamp (0xA5)
     EEPROM_WriteBytePair(0x0006, DEFAULT_REBROADCAST_MODE, DEFAULT_INIT_STAMP);
     
-    // Byte 8-9: Reserved (0xFF) + Reserved (0xFF)
-    EEPROM_WriteBytePair(0x0008, 0xFF, 0xFF);
+    // Byte 8-9: inRESERVE config (default: DISABLED, Output 9, 30sec, 12.3V)
+    // Byte 8: [CellID=0][Output=9] = 0x09 (disabled)
+    // Byte 9: [Time=0 (30sec)][Voltage=2 (12.3V)] = 0x02
+    EEPROM_WriteBytePair(0x0008, DEFAULT_INRESERVE_1, DEFAULT_INRESERVE_2);
     
     // Byte 10-11: Write Request PGN A (0xFF) + Write Request PGN B (0x10)
     EEPROM_WriteBytePair(0x000A, 0xFF, 0x10);

@@ -11,7 +11,7 @@
  *   OUT2 ← IN04 (Right Turn) OR CAN bit 1 - flashing pattern from input
  *   OUT3 ← IN07 (High Beams) OR CAN bit 2 - steady
  *   OUT4 ← IN06 (Parking Lights) OR CAN bit 3 - steady
- *   OUT5 ← IN01 (Ignition) OR CAN bit 4 - steady
+ *   OUT5 ← (IN01 (Ignition) OR CAN bit 4) AND Security DISARMED - steady
  *   OUT6 ← Security OR CAN bit 5 - software controlled
  *   OUT7 ← CAN bit 6 only
  *   OUT8 ← CAN bit 7 only
@@ -210,7 +210,7 @@ void Outputs_UpdateFromInputs(void) {
     
     // OUT3 ← IN07 (High Beams) - requires ignition (matches EEPROM case)
     // Only turn on if ignition is on, OR CAN override
-    uint8_t out3_state = (in07_high_beam && ignition_on) || (can_override_states & 0x04);
+    uint8_t out3_state = in07_high_beam || (can_override_states & 0x04);
     Outputs_Set(3, out3_state);
     
     // OUT4 ← IN06 (Parking Lights/Gauge Illumination) - no ignition required
@@ -218,8 +218,8 @@ void Outputs_UpdateFromInputs(void) {
     Outputs_Set(4, out4_state);
     
     // OUT5 ← IN01 (Ignition) OR CAN override - steady on/off
-    // This IS the ignition indicator, so no ignition check needed
-    uint8_t out5_state = in01_ignition || (can_override_states & 0x10);
+    // Only turns on if security is DISARMED (Inputs_GetSecurityState() == 1)
+    uint8_t out5_state = (in01_ignition || (can_override_states & 0x10)) && Inputs_GetSecurityState();
     Outputs_Set(5, out5_state);
     
     // OUT6 ← Security (software controlled) OR CAN override

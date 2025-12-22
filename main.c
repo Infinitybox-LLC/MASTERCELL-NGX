@@ -21,6 +21,7 @@
 #include "network_inventory.h"
 #include "climate.h"
 #include "outputs.h"
+#include "inreserve.h"
  
  // Debug variables from eeprom_cases.c
  
@@ -44,14 +45,32 @@
 #define SCREEN_SYSTEM_INFO  4
 #define SCREEN_DEBUG        5
 #define SCREEN_CELL_DETAIL  6
+#define SCREEN_INRESERVE    7
+#define SCREEN_INRESERVE_POPUP 8
  
  // Menu items
  #define MENU_SWITCH_STATES  0
  #define MENU_SYSTEM_INVENTORY 1
  #define MENU_SYSTEM_INFO    2
- #define MENU_DEBUG          3
- #define MENU_HOME_SCREEN    4
- #define MENU_COUNT          5
+ #define MENU_INRESERVE      3
+ #define MENU_DEBUG          4
+ #define MENU_HOME_SCREEN    5
+ #define MENU_COUNT          6
+
+// inRESERVE sub-menu states
+#define INRESERVE_FIELD_ENABLE   0
+#define INRESERVE_FIELD_CELL     1
+#define INRESERVE_FIELD_OUTPUT   2
+#define INRESERVE_FIELD_TIME     3
+#define INRESERVE_FIELD_VOLTAGE  4
+#define INRESERVE_FIELD_COUNT    5
+
+// inRESERVE popup types
+#define INRESERVE_POPUP_ENABLE   0
+#define INRESERVE_POPUP_CELL     1
+#define INRESERVE_POPUP_OUTPUT   2
+#define INRESERVE_POPUP_TIME     3
+#define INRESERVE_POPUP_VOLTAGE  4
  
  volatile uint16_t scan_timer = 10;
  volatile uint16_t display_timer = 500;
@@ -92,6 +111,13 @@ uint8_t selected_cell_type = 0;           // 0=PowerCell, 1=InMotion
 uint8_t detail_current_scroll = 0;        // Scroll position for current display in detail
 volatile uint32_t system_time_ms = 0;
 volatile uint16_t detail_refresh_timer = 0;  // 2-second refresh timer for detail screen
+
+// inRESERVE screen state
+uint8_t inreserve_field_selection = 0;    // Currently selected field (0-4)
+uint8_t inreserve_scroll_position = 0;    // Scroll position for 5 items on 4 lines
+uint8_t inreserve_popup_type = 0;         // Which popup is active
+uint8_t inreserve_popup_selection = 0;    // Selection within popup
+uint8_t inreserve_popup_scroll = 0;       // Scroll position within popup
  
 // PHASE 3: Broadcast reason codes
 #define BROADCAST_REASON_PATTERN_TICK   0
@@ -105,10 +131,12 @@ void DisplayMenuScreen(void);
 void DisplaySwitchScreen(void);
 void DisplayInventoryScreen(void);
 void DisplayCellDetailScreen(void);
- void DisplaySystemInfoScreen(void);
- void DisplayDebugScreen(void);
- void HandleButtonPress(uint8_t button);
- void InitUnusedPins(void);
+void DisplaySystemInfoScreen(void);
+void DisplayDebugScreen(void);
+void DisplayInReserveScreen(void);
+void DisplayInReservePopup(void);
+void HandleButtonPress(uint8_t button);
+void InitUnusedPins(void);
  
  int main(void) {
      char display_buffer[17];
@@ -134,6 +162,7 @@ void DisplayCellDetailScreen(void);
     Network_Init();
     Climate_Init();
     Outputs_Init();
+    InReserve_Init();
      
      LCD_Clear();
      LCD_SetCursor(0, 0);
@@ -491,6 +520,22 @@ void DisplayCellDetailScreen(void);
                  IEC0bits.T1IE = 1;
              }
              
+             // inRESERVE voltage monitoring
+             {
+                 InReserveConfig* ir_cfg = InReserve_GetConfig();
+                 if(ir_cfg->enabled) {
+                     // Get voltage from configured PowerCell
+                     // PowerCell 1 = FF11 (Front), PowerCell 2 = FF12 (Rear), etc.
+                     uint16_t target_pgn = 0xFF10 + ir_cfg->cell_id;
+                     NetworkDevice* dev = Network_FindByPGN(target_pgn);
+                     if(dev != NULL && dev->active) {
+                         // Voltage is in byte 6: raw * 125 = millivolts
+                         uint16_t voltage_mv = (uint16_t)dev->data[6] * 125;
+                         InReserve_Update(voltage_mv);
+                     }
+                 }
+             }
+             
              for(uint8_t i = 0; i < 44; i++) {
                  uint8_t current_state = Inputs_GetState(i);
                  
@@ -542,6 +587,12 @@ void DisplayCellDetailScreen(void);
                     break;
                 case SCREEN_CELL_DETAIL:
                     // Cell detail screen uses its own 2-second refresh timer
+                    break;
+                case SCREEN_INRESERVE:
+                    DisplayInReserveScreen();
+                    break;
+                case SCREEN_INRESERVE_POPUP:
+                    DisplayInReservePopup();
                     break;
             }
             
@@ -642,6 +693,13 @@ void InitUnusedPins(void) {
                          current_screen = SCREEN_SYSTEM_INFO;
                          LCD_Clear();
                          DisplaySystemInfoScreen();
+                         break;
+                     case MENU_INRESERVE:
+                         current_screen = SCREEN_INRESERVE;
+                         inreserve_field_selection = 0;
+                         inreserve_scroll_position = 0;
+                         LCD_Clear();
+                         DisplayInReserveScreen();
                          break;
                      case MENU_DEBUG:
                          current_screen = SCREEN_DEBUG;
@@ -746,6 +804,151 @@ void InitUnusedPins(void) {
                  DisplayMainScreen();
              }
              break;
+             
+        case SCREEN_INRESERVE:
+            if(button == BTN_ID_HOME) {
+                current_screen = SCREEN_MENU;
+                LCD_Clear();
+                LCD_Backlight(1);
+                backlight_timer = 5000;
+                DisplayMenuScreen();
+            } else if(button == BTN_ID_UP) {
+                if(inreserve_field_selection > 0) {
+                    inreserve_field_selection--;
+                    // Adjust scroll if needed
+                    if(inreserve_field_selection < inreserve_scroll_position) {
+                        inreserve_scroll_position = inreserve_field_selection;
+                    }
+                    LCD_Clear();
+                    DisplayInReserveScreen();
+                }
+            } else if(button == BTN_ID_DOWN) {
+                InReserveConfig* cfg = InReserve_GetConfig();
+                uint8_t max_field = cfg->enabled ? (INRESERVE_FIELD_COUNT - 1) : 0;
+                if(inreserve_field_selection < max_field) {
+                    inreserve_field_selection++;
+                    // Adjust scroll if needed (4 visible lines, first is title)
+                    if(inreserve_field_selection >= inreserve_scroll_position + 3) {
+                        inreserve_scroll_position = inreserve_field_selection - 2;
+                    }
+                    LCD_Clear();
+                    DisplayInReserveScreen();
+                }
+            } else if(button == BTN_ID_SELECT) {
+                // Open popup for selected field
+                inreserve_popup_type = inreserve_field_selection;
+                InReserveConfig* cfg = InReserve_GetConfig();
+                // Set initial popup selection to current value
+                switch(inreserve_popup_type) {
+                    case INRESERVE_POPUP_ENABLE:
+                        inreserve_popup_selection = cfg->enabled ? 0 : 1;
+                        break;
+                    case INRESERVE_POPUP_CELL:
+                        inreserve_popup_selection = cfg->cell_id > 0 ? cfg->cell_id - 1 : 0;
+                        break;
+                    case INRESERVE_POPUP_OUTPUT: {
+                        uint8_t min_out = InReserve_GetMinOutput(cfg->cell_id);
+                        uint8_t max_out = InReserve_GetMaxOutput(cfg->cell_id);
+                        // Clamp current output to valid range, then convert to selection index
+                        uint8_t clamped = cfg->output;
+                        if(clamped < min_out) clamped = min_out;
+                        if(clamped > max_out) clamped = max_out;
+                        inreserve_popup_selection = clamped - min_out;
+                        break;
+                    }
+                    case INRESERVE_POPUP_TIME:
+                        inreserve_popup_selection = cfg->time_code;
+                        break;
+                    case INRESERVE_POPUP_VOLTAGE:
+                        inreserve_popup_selection = cfg->voltage_code;
+                        break;
+                }
+                // Set scroll position to show the selected item (show 3 items, selection in middle if possible)
+                if(inreserve_popup_selection <= 1) {
+                    inreserve_popup_scroll = 0;
+                } else {
+                    inreserve_popup_scroll = inreserve_popup_selection - 1;
+                }
+                current_screen = SCREEN_INRESERVE_POPUP;
+                LCD_Clear();
+                DisplayInReservePopup();
+            }
+            break;
+            
+        case SCREEN_INRESERVE_POPUP:
+            if(button == BTN_ID_HOME) {
+                // Cancel - return to main inRESERVE screen
+                current_screen = SCREEN_INRESERVE;
+                LCD_Clear();
+                DisplayInReserveScreen();
+            } else if(button == BTN_ID_UP) {
+                if(inreserve_popup_selection > 0) {
+                    inreserve_popup_selection--;
+                    if(inreserve_popup_selection < inreserve_popup_scroll) {
+                        inreserve_popup_scroll = inreserve_popup_selection;
+                    }
+                    DisplayInReservePopup();
+                }
+            } else if(button == BTN_ID_DOWN) {
+                uint8_t max_items = 0;
+                switch(inreserve_popup_type) {
+                    case INRESERVE_POPUP_ENABLE: max_items = 2; break;
+                    case INRESERVE_POPUP_CELL: max_items = 6; break;   // Front, Rear, 3, 4, 5, 6
+                    case INRESERVE_POPUP_OUTPUT: {
+                        InReserveConfig* cfg = InReserve_GetConfig();
+                        max_items = InReserve_GetOutputCount(cfg->cell_id);
+                        break;
+                    }
+                    case INRESERVE_POPUP_TIME: max_items = 3; break;   // 30sec, 15min, 20min
+                    case INRESERVE_POPUP_VOLTAGE: max_items = 3; break;  // 12.1V, 12.2V, 12.3V
+                }
+                if(inreserve_popup_selection < max_items - 1) {
+                    inreserve_popup_selection++;
+                    if(inreserve_popup_selection >= inreserve_popup_scroll + 3) {
+                        inreserve_popup_scroll = inreserve_popup_selection - 2;
+                    }
+                    DisplayInReservePopup();
+                }
+            } else if(button == BTN_ID_SELECT) {
+                // Apply selection
+                switch(inreserve_popup_type) {
+                    case INRESERVE_POPUP_ENABLE:
+                        if(inreserve_popup_selection == 0) {
+                            // Enable - set to default cell if currently disabled
+                            InReserveConfig* cfg = InReserve_GetConfig();
+                            if(cfg->cell_id == 0) {
+                                InReserve_SetCellID(2);  // Default to Rear
+                            }
+                        } else {
+                            InReserve_SetCellID(0);  // Disable
+                        }
+                        break;
+                    case INRESERVE_POPUP_CELL:
+                        InReserve_SetCellID(inreserve_popup_selection + 1);
+                        break;
+                    case INRESERVE_POPUP_OUTPUT: {
+                        InReserveConfig* cfg = InReserve_GetConfig();
+                        uint8_t min_out = InReserve_GetMinOutput(cfg->cell_id);
+                        InReserve_SetOutput(inreserve_popup_selection + min_out);
+                        break;
+                    }
+                    case INRESERVE_POPUP_TIME:
+                        InReserve_SetTime(inreserve_popup_selection);
+                        break;
+                    case INRESERVE_POPUP_VOLTAGE:
+                        InReserve_SetVoltage(inreserve_popup_selection);
+                        break;
+                }
+                // Save to EEPROM
+                InReserve_SaveConfig();
+                // Return to main screen
+                current_screen = SCREEN_INRESERVE;
+                inreserve_field_selection = 0;
+                inreserve_scroll_position = 0;
+                LCD_Clear();
+                DisplayInReserveScreen();
+            }
+            break;
      }
  }
  
@@ -803,6 +1006,9 @@ void InitUnusedPins(void) {
                  break;
              case MENU_SYSTEM_INFO:
                  LCD_Print(cursor == '>' ? ">SYSTEM INFO    " : " SYSTEM INFO    ");
+                 break;
+             case MENU_INRESERVE:
+                 LCD_Print(cursor == '>' ? ">inRESERVE      " : " inRESERVE      ");
                  break;
              case MENU_DEBUG:
                  LCD_Print(cursor == '>' ? ">DEBUG          " : " DEBUG          ");
@@ -1395,6 +1601,159 @@ void DisplaySystemInfoScreen(void) {
      
     // Display debug counts on right side
     LCD_SetCursor(0, 14);
+}
+
+void DisplayInReserveScreen(void) {
+    char display_buffer[17];
+    char voltage_str[8];
+    
+    // Keep backlight on for sub-menu screens
+    LCD_Backlight(1);
+    backlight_timer = 0;
+    
+    InReserveConfig* cfg = InReserve_GetConfig();
+    
+    // If disabled, show simplified screen
+    if(!cfg->enabled) {
+        LCD_SetCursor(0, 0);
+        LCD_Print(inreserve_field_selection == 0 ? ">inRESERVE: OFF " : " inRESERVE: OFF ");
+        
+        LCD_SetCursor(1, 0);
+        LCD_Print("                ");
+        LCD_SetCursor(2, 0);
+        LCD_Print("  --DISABLED--  ");
+        LCD_SetCursor(3, 0);
+        LCD_Print("                ");
+        return;
+    }
+    
+    // Enabled - show all fields with scrolling
+    // 5 fields: Enable, Cell, Output, Time, Voltage
+    // 4 lines available, so we need to scroll
+    
+    for(uint8_t line = 0; line < 4; line++) {
+        uint8_t field = inreserve_scroll_position + line;
+        LCD_SetCursor(line, 0);
+        
+        if(field >= INRESERVE_FIELD_COUNT) {
+            LCD_Print("                ");
+            continue;
+        }
+        
+        char cursor = (field == inreserve_field_selection) ? '>' : ' ';
+        
+        switch(field) {
+            case INRESERVE_FIELD_ENABLE:
+                sprintf(display_buffer, "%cinRESERVE:  ON ", cursor);
+                break;
+            case INRESERVE_FIELD_CELL:
+                sprintf(display_buffer, "%cCell:   %6s ", cursor, InReserve_GetCellName(cfg->cell_id));
+                break;
+            case INRESERVE_FIELD_OUTPUT:
+                sprintf(display_buffer, "%cOutput:     %02d ", cursor, cfg->output);
+                break;
+            case INRESERVE_FIELD_TIME:
+                sprintf(display_buffer, "%cTime:   %6s ", cursor, InReserve_GetTimeString(cfg->time_code));
+                break;
+            case INRESERVE_FIELD_VOLTAGE:
+                InReserve_GetVoltageString(cfg->voltage_code, voltage_str);
+                sprintf(display_buffer, "%cVoltage: %5s ", cursor, voltage_str);
+                break;
+        }
+        LCD_Print(display_buffer);
+    }
+}
+
+void DisplayInReservePopup(void) {
+    char display_buffer[17];
+    char voltage_str[8];
+    
+    // Keep backlight on
+    LCD_Backlight(1);
+    backlight_timer = 0;
+    
+    // Line 0: Title
+    LCD_SetCursor(0, 0);
+    switch(inreserve_popup_type) {
+        case INRESERVE_POPUP_ENABLE:
+            LCD_Print("   inRESERVE    ");
+            break;
+        case INRESERVE_POPUP_CELL:
+            LCD_Print("  Select Cell   ");
+            break;
+        case INRESERVE_POPUP_OUTPUT:
+            LCD_Print(" Select Output  ");
+            break;
+        case INRESERVE_POPUP_TIME:
+            LCD_Print("  Select Time   ");
+            break;
+        case INRESERVE_POPUP_VOLTAGE:
+            LCD_Print("Select Threshold");
+            break;
+    }
+    
+    // Lines 1-3: Options
+    for(uint8_t line = 0; line < 3; line++) {
+        uint8_t item = inreserve_popup_scroll + line;
+        LCD_SetCursor(line + 1, 0);
+        
+        char cursor = (item == inreserve_popup_selection) ? '>' : ' ';
+        
+        switch(inreserve_popup_type) {
+            case INRESERVE_POPUP_ENABLE:
+                if(item == 0) {
+                    sprintf(display_buffer, "%c    ENABLED    ", cursor);
+                } else if(item == 1) {
+                    sprintf(display_buffer, "%c   DISABLED    ", cursor);
+                } else {
+                    LCD_Print("                ");
+                    continue;
+                }
+                break;
+                
+            case INRESERVE_POPUP_CELL:
+                if(item < 6) {
+                    sprintf(display_buffer, "%c  %-12s ", cursor, InReserve_GetCellName(item + 1));
+                } else {
+                    LCD_Print("                ");
+                    continue;
+                }
+                break;
+                
+            case INRESERVE_POPUP_OUTPUT: {
+                InReserveConfig* cfg = InReserve_GetConfig();
+                uint8_t output_count = InReserve_GetOutputCount(cfg->cell_id);
+                uint8_t min_out = InReserve_GetMinOutput(cfg->cell_id);
+                if(item < output_count) {
+                    sprintf(display_buffer, "%c   Output %02d   ", cursor, item + min_out);
+                } else {
+                    LCD_Print("                ");
+                    continue;
+                }
+                break;
+            }
+                
+            case INRESERVE_POPUP_TIME:
+                if(item < 3) {
+                    sprintf(display_buffer, "%c   %-10s  ", cursor, InReserve_GetTimeString(item));
+                } else {
+                    LCD_Print("                ");
+                    continue;
+                }
+                break;
+                
+            case INRESERVE_POPUP_VOLTAGE:
+                if(item < 3) {
+                    InReserve_GetVoltageString(item, voltage_str);
+                    sprintf(display_buffer, "%c     %s       ", cursor, voltage_str);
+                } else {
+                    LCD_Print("                ");
+                    continue;
+                }
+                break;
+        }
+        LCD_Print(display_buffer);
+    }
 }
 
 /**

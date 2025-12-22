@@ -52,8 +52,11 @@
 #define EEPROM_CFG_FW_MINOR             5
 #define EEPROM_CFG_REBROADCAST_MODE     6
 #define EEPROM_CFG_INIT_STAMP           7
-#define EEPROM_CFG_RESERVED_1           8
-#define EEPROM_CFG_RESERVED_2           9
+// inRESERVE configuration (2 bytes)
+// Byte 8: [XXXX][YYYY] - X=PowerCell ID (0=disabled, 1=Front, 2=Rear, 3+), Y=Output (1-10)
+// Byte 9: [ZZZZ][QQQQ] - Z=Time (0=5min, 1=10min, 2=15min, 3=20min), Q=Voltage (0=11.9V, 1=12.0V, ... B=13.0V)
+#define EEPROM_CFG_INRESERVE_1          8   // PowerCell ID (upper nibble) + Output (lower nibble)
+#define EEPROM_CFG_INRESERVE_2          9   // Time threshold (upper nibble) + Voltage threshold (lower nibble)
 #define EEPROM_CFG_WRITE_REQ_PGN_A      10
 #define EEPROM_CFG_WRITE_REQ_PGN_B      11
 #define EEPROM_CFG_WRITE_REQ_SA         12
@@ -101,6 +104,11 @@
 #define DEFAULT_CUSTOMER_NAME_2         0x20    // ASCII space
 #define DEFAULT_CUSTOMER_NAME_3         0x20    // ASCII space
 #define DEFAULT_CUSTOMER_NAME_4         0x20    // ASCII space
+
+// inRESERVE default values
+// Default: DISABLED (0x0), Output 9 (0x9), 30 sec (0x0), 12.3V (0x2)
+#define DEFAULT_INRESERVE_1             0x09    // PowerCell 0 (DISABLED), Output 9
+#define DEFAULT_INRESERVE_2             0x02    // 30 seconds (code 0), 12.3V (code 2)
 
 // Bitrate codes
 #define BITRATE_250K                    0x01
