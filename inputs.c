@@ -8,10 +8,10 @@
  * - Uses EEPROM_SetManualCase() to control CAN broadcasts
  * - Does NOT call EEPROM_HandleInputChange() for one-button start inputs
  * 
- * TRACK IGNITION FEATURE:
- * - Cases with byte 4 bits 6-7 = 0x01 follow ignition flag, not physical input
+ * IGNITION MODE (Byte 4, Bits 0-1):
+ * - 0x01 = Set Ignition: This input IS the ignition input (sets ignition flag when ON)
+ * - 0x02 = Track Ignition: This input's output follows ignition state
  * - Calls EEPROM_UpdateIgnitionTrackedCases() whenever ignition_flag changes
- * - Track ignition cases work on any input, independent of physical state
  */
 
 #include "inputs.h"
@@ -126,7 +126,7 @@ static const InputMapping input_map[INPUT_COUNT] = {
 // HELPER FUNCTIONS - EEPROM CONFIGURATION CHECKS
 // ============================================================================
 
-// Check if an input is configured as an ignition input
+// Check if an input is configured as an ignition input (Set Ignition mode)
 // Returns 1 if this input is configured as ignition, 0 otherwise
 static uint8_t IsIgnitionInput(uint8_t input_num) {
     if(input_num >= TOTAL_INPUTS) {
@@ -143,10 +143,10 @@ static uint8_t IsIgnitionInput(uint8_t input_num) {
     // Read byte 4 (configuration byte)
     uint8_t config_byte = ReadEEPROMByte(base_address + 4);
     
-    // Check if bits 0-1 equal 0x01
-    uint8_t set_ignition_bits = config_byte & 0x03;
+    // Check if bits 0-1 equal 0x01 (Set Ignition)
+    uint8_t ignition_mode_bits = config_byte & CONFIG_IGNITION_MODE_MASK;
     
-    return (set_ignition_bits == 0x01) ? 1 : 0;
+    return (ignition_mode_bits == CONFIG_SET_IGNITION_VALUE) ? 1 : 0;
 }
 
 // ============================================================================
@@ -505,6 +505,7 @@ void Inputs_SetCANSecurity(uint8_t state) {
 
 // Update the ignition flag based on all ignition inputs
 // Returns 1 if ignition flag changed (requiring CAN transmission), 0 if unchanged
+// NOTE: Ignition flag is blocked from turning ON if security is ARMED
 uint8_t Inputs_UpdateIgnitionFlag(void) {
     uint8_t any_ignition_on = 0;
     
@@ -518,6 +519,13 @@ uint8_t Inputs_UpdateIgnitionFlag(void) {
                 break;  // Found at least one ON, can stop checking
             }
         }
+    }
+    
+    // SECURITY CHECK: Block ignition flag from turning ON if security is ARMED
+    // Security state: 1 = DISARMED (OK), 0 = ARMED (blocked)
+    if(any_ignition_on && !Inputs_GetSecurityState()) {
+        // Security is ARMED - do not allow ignition flag to turn ON
+        any_ignition_on = 0;
     }
     
     // Set or clear the ignition flag

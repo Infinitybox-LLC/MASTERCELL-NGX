@@ -975,10 +975,16 @@ void InitUnusedPins(void) {
      
      LCD_SetCursor(3, 0);
      uint8_t ignition = Inputs_GetIgnitionState();
-     if(ignition) {
+     uint8_t security_disarmed = Inputs_GetSecurityState();  // 1 = DISARMED, 0 = ARMED
+     
+     if(ignition && security_disarmed) {
          LCD_Print("IGN: ON  SEC:OFF");
-     } else {
+     } else if(ignition && !security_disarmed) {
+         LCD_Print("IGN: ON  SEC: ON");
+     } else if(!ignition && security_disarmed) {
          LCD_Print("IGN: OFF SEC:OFF");
+     } else {
+         LCD_Print("IGN: OFF SEC: ON");
      }
  }
  

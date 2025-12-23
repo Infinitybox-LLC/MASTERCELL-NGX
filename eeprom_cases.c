@@ -1237,20 +1237,55 @@ void EEPROM_Pattern_UpdateTimers(void) {
      // Read byte 4 (configuration byte)
      uint8_t config_byte = ReadEEPROMByte(base_address + 4);
      
-     // Check if bits 6-7 equal 0x01 (which is 0x40 when shifted to bits 6-7)
-     // Bits 6-7 mask: 0xC0
-     // Track ignition value: 0x40 (binary: 0100 0000)
-     uint8_t track_ignition_bits = config_byte & 0xC0;
+     // Check if bits 0-1 equal 0x02 (Track Ignition)
+     // Bits 0-1 mask: 0x03
+     // Track ignition value: 0x02 (binary: 0000 0010)
+     uint8_t ignition_mode_bits = config_byte & CONFIG_IGNITION_MODE_MASK;
      
-     return (track_ignition_bits == 0x40) ? 1 : 0;
+     return (ignition_mode_bits == CONFIG_TRACK_IGNITION_VALUE) ? 1 : 0;
  }
  
  void EEPROM_UpdateIgnitionTrackedCases(uint8_t ignition_flag) {
-     // This function manages all cases that have track ignition enabled
-     // It scans all inputs and cases, and activates/deactivates them based on ignition_flag
+     // This function manages all cases that have track ignition enabled (config byte 0x02)
+     // AND cases that require ignition via must_be_on[5] & 0x20
+     // It activates/deactivates them based on ignition_flag
      
-     // STEP 1: Remove all existing track ignition cases from active list
-     // We need to clear them first so we can rebuild based on new ignition state
+     // STEP 0: If ignition is turning OFF, collect PGN/SA from must_be_on ignition cases
+     // before removing them, so we can send clearing messages
+     typedef struct {
+         uint16_t pgn;
+         uint8_t source_addr;
+         uint8_t priority;
+     } PGN_SA_Pair;
+     
+     PGN_SA_Pair must_be_on_clearing[MAX_ACTIVE_CASES];
+     uint8_t must_be_on_clearing_count = 0;
+     
+     if(!ignition_flag) {
+         // Ignition is OFF - collect PGN/SA from active cases with must_be_on ignition
+         for(uint8_t i = 0; i < active_case_count; i++) {
+             // Check if this case requires ignition via must_be_on
+             if(active_cases[i].case_data.must_be_on[5] & 0x20) {
+                 // Check if this PGN/SA is already in list
+                 uint8_t already_listed = 0;
+                 for(uint8_t j = 0; j < must_be_on_clearing_count; j++) {
+                     if(must_be_on_clearing[j].pgn == active_cases[i].case_data.pgn &&
+                        must_be_on_clearing[j].source_addr == active_cases[i].case_data.source_addr) {
+                         already_listed = 1;
+                         break;
+                     }
+                 }
+                 if(!already_listed && must_be_on_clearing_count < MAX_ACTIVE_CASES) {
+                     must_be_on_clearing[must_be_on_clearing_count].pgn = active_cases[i].case_data.pgn;
+                     must_be_on_clearing[must_be_on_clearing_count].source_addr = active_cases[i].case_data.source_addr;
+                     must_be_on_clearing[must_be_on_clearing_count].priority = active_cases[i].case_data.priority;
+                     must_be_on_clearing_count++;
+                 }
+             }
+         }
+     }
+     
+     // STEP 1: Remove track ignition cases AND must_be_on ignition cases (when ignition OFF)
      uint8_t write_idx = 0;
      for(uint8_t read_idx = 0; read_idx < active_case_count; read_idx++) {
          // Check if this active case is a track ignition case
@@ -1259,14 +1294,18 @@ void EEPROM_Pattern_UpdateTimers(void) {
              active_cases[read_idx].case_num
          );
          
-         if(!is_track_ignition) {
-             // Keep this case (it's not a track ignition case)
+         // Check if this case requires ignition via must_be_on (only remove when ignition is OFF)
+         uint8_t requires_ignition = (active_cases[read_idx].case_data.must_be_on[5] & 0x20) ? 1 : 0;
+         uint8_t remove_must_be_on = (!ignition_flag && requires_ignition);
+         
+         if(!is_track_ignition && !remove_must_be_on) {
+             // Keep this case
              if(write_idx != read_idx) {
                  active_cases[write_idx] = active_cases[read_idx];
              }
              write_idx++;
          }
-         // If it IS a track ignition case, skip it (don't copy it to write position)
+         // If it's track ignition OR (must_be_on ignition and ignition is OFF), skip it
      }
      active_case_count = write_idx;
      
@@ -1314,17 +1353,19 @@ void EEPROM_Pattern_UpdateTimers(void) {
          }
      } else {
          // STEP 3: Ignition is OFF - Generate clearing messages for all track ignition cases
-         // We need to find all unique PGN/SA combinations from track ignition cases
-         // and add clearing cases (all zeros) for each
-         
-         typedef struct {
-             uint16_t pgn;
-             uint8_t source_addr;
-             uint8_t priority;
-         } PGN_SA_Pair;
+         // AND all must_be_on ignition cases (collected in STEP 0)
+         // We need to find all unique PGN/SA combinations and add clearing cases (all zeros) for each
          
          PGN_SA_Pair clearing_list[MAX_ACTIVE_CASES];
          uint8_t clearing_count = 0;
+         
+         // First, add must_be_on ignition PGN/SA pairs (collected in STEP 0)
+         for(uint8_t i = 0; i < must_be_on_clearing_count; i++) {
+             if(clearing_count < MAX_ACTIVE_CASES) {
+                 clearing_list[clearing_count] = must_be_on_clearing[i];
+                 clearing_count++;
+             }
+         }
          
          // Scan all inputs to find track ignition cases and collect their PGN/SA
          for(uint8_t input_num = 0; input_num < TOTAL_INPUTS; input_num++) {
@@ -1372,7 +1413,7 @@ void EEPROM_Pattern_UpdateTimers(void) {
              }
              
              // Create a clearing case with all zeros
-             active_cases[active_case_count].input_num = 0xFF;  // Special marker for track ignition clearing
+             active_cases[active_case_count].input_num = 0xFF;  // Special marker for ignition clearing (track + must_be_on)
              active_cases[active_case_count].case_num = i;
              active_cases[active_case_count].is_on_case = 0;  // OFF case
              active_cases[active_case_count].needs_removal_after_send = 1;  // Remove after transmission

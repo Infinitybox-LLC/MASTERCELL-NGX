@@ -26,18 +26,21 @@
 #define CASE_OFFSET_PGN_HIGH        1
 #define CASE_OFFSET_PGN_LOW         2
 #define CASE_OFFSET_SOURCE_ADDR     3
-#define CASE_OFFSET_CONFIG          4   // Byte 4: Configuration byte with track ignition bits
+#define CASE_OFFSET_CONFIG          4   // Byte 4: Configuration byte
 #define CASE_OFFSET_PATTERN_TIMING  7   // Byte 7: Upper nibble = ON time, Lower nibble = OFF time
 #define CASE_OFFSET_DATA_START      24  // CAN data is in bytes 24-31
 #define CASE_DATA_SIZE              8
 
 // Byte 4 bit masks (configuration byte)
+// Bits 0-1: Ignition mode (Set Ignition OR Track Ignition - mutually exclusive)
+#define CONFIG_IGNITION_MODE_MASK       0x03  // Bits 0-1: Ignition mode
+#define CONFIG_SET_IGNITION_VALUE       0x01  // Bits 0-1 = 01: This input IS the ignition input
+#define CONFIG_TRACK_IGNITION_VALUE     0x02  // Bits 0-1 = 10: This input tracks ignition state
 #define CONFIG_CAN_BE_OVERRIDDEN_MASK   0x0C  // Bits 2-3: Can be overridden by pattern cases
 #define CONFIG_CAN_BE_OVERRIDDEN_VALUE  0x04  // Bits 2-3 = 01 for can be overridden
-#define CONFIG_ONE_BUTTON_MASK      0x30  // Bits 4-5: One-button start mode
-#define CONFIG_ONE_BUTTON_VALUE     0x10  // Bits 4-5 = 01 for one-button start
-#define CONFIG_TRACK_IGNITION_MASK  0xC0  // Bits 6-7: Track ignition mode
-#define CONFIG_TRACK_IGNITION_VALUE 0x40  // Bits 6-7 = 01 for track ignition
+#define CONFIG_ONE_BUTTON_MASK          0x30  // Bits 4-5: One-button start mode
+#define CONFIG_ONE_BUTTON_VALUE         0x10  // Bits 4-5 = 01 for one-button start
+// Bits 6-7: Reserved for future use (e.g., Toggle mode)
 
 // Pattern states for inputs
 #define PATTERN_STATE_INACTIVE      0   // Input is off, no pattern running
